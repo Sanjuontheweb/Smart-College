@@ -231,47 +231,6 @@ export default function AdminConsoleScreen() {
             onPress={handleDispatchBroadcast}
           />
         </Card>
-
-        {/* User Directory Overview */}
-        <Text style={[styles.sectionHeading, { color: colors.text }]}>
-          Enrolled Students & Faculty ({studentsList.length + facultiesList.length})
-        </Text>
-        <Card style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, padding: 0 }}>
-          {[...studentsList, ...facultiesList].slice(0, 6).map((u, idx) => (
-            <View
-              key={u.id}
-              style={[
-                styles.userRow,
-                idx > 0 && { borderTopWidth: 1, borderTopColor: colors.border },
-              ]}
-            >
-              <View
-                style={[
-                  styles.userAvatar,
-                  { backgroundColor: u.role === 'faculty' ? '#059669' : '#2563EB' },
-                ]}
-              >
-                <Ionicons
-                  name={u.role === 'faculty' ? 'briefcase' : 'school'}
-                  size={16}
-                  color="#FFFFFF"
-                />
-              </View>
-              <View style={{ flex: 1, paddingLeft: 12 }}>
-                <Text style={[styles.userName, { color: colors.text }]}>{u.fullName}</Text>
-                <Text style={[styles.userEmail, { color: colors.textSecondary }]}>{u.email}</Text>
-                <Text style={[styles.userDept, { color: colors.textMuted }]}>
-                  {u.role.toUpperCase()} • {u.department}
-                </Text>
-              </View>
-              <Badge
-                label={u.role}
-                variant={u.role === 'faculty' ? 'success' : 'primary'}
-                size="small"
-              />
-            </View>
-          ))}
-        </Card>
       </ScrollView>
 
       {/* Semester End Confirmation Modal */}

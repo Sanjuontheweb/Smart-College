@@ -180,7 +180,7 @@ export default function FacultyDirectoryScreen() {
                 }
               >
                 <Ionicons name="mail" size={14} color={colors.primary} />
-                <Text style={[styles.contactBtnText, { color: colors.primary }]}>Send Email</Text>
+                <Text style={[styles.contactBtnText, { color: colors.primary }]}>Send Message</Text>
               </TouchableOpacity>
 
               <TouchableOpacity

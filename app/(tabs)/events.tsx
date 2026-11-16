@@ -446,7 +446,7 @@ export default function EventsScreen() {
               >
                 <Ionicons name="shield-checkmark" size={16} color="#7A3CFF" />
                 <Text style={[styles.adminBannerText, { color: colors.text }]}>
-                  Faculty review mode | {pendingApplications} pending application
+                  Review mode • {pendingApplications} pending application
                   {pendingApplications === 1 ? '' : 's'}
                 </Text>
               </View>

@@ -332,7 +332,7 @@ export default function ProfileScreen() {
         <View style={styles.footerWrap}>
           <RetroLogo size="small" showSubtitle={false} />
           <Text style={[styles.footerText, { color: colors.textMuted }]}>
-            Survive College • v1.0.0 (Build 2026.2) • Fully Local Android App
+            Survive College • v2.0.0 (Build 2026.11) • Fully Local Android App
           </Text>
         </View>
       </ScrollView>

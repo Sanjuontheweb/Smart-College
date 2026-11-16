@@ -868,7 +868,7 @@ export default function AcademicsScreen() {
                     VTU Autonomous Credit System • 4th Semester
                   </Text>
                 </View>
-                <Badge label="VERIFIED BY COE" variant="success" />
+                <Badge label="VERIFIED • COE" variant="success" />
               </View>
 
               <View style={styles.marksScoreRow}>

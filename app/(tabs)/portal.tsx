@@ -1267,7 +1267,7 @@ export default function PortalScreen() {
       setEditingItem(null);
       showNotice({
         title: 'Deleted',
-        message: 'Item removed from local database.',
+        message: 'Removed from local database.',
         type: 'info',
       });
     } catch (e: any) {
@@ -1542,7 +1542,7 @@ export default function PortalScreen() {
                 <Text style={styles.addBtnText}>Add Event</Text>
               </TouchableOpacity>
             </View>
-            
+
             {calendarEvents.length === 0 && (
               <Card style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, padding: 18, alignItems: 'center', marginBottom: 16 }}>
                 <Ionicons name="calendar-clear-outline" size={28} color={colors.textSecondary} style={{ marginBottom: 6 }} />
