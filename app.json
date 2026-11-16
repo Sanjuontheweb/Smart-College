@@ -1,0 +1,64 @@
+{
+  "expo": {
+    "name": "Survive College",
+    "slug": "survive-college",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "survivecollege",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0B0F19",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.survivecollege.app"
+    },
+    "android": {
+      "package": "com.survivecollege.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1A0F3C",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "SCHEDULE_EXACT_ALARM",
+        "POST_NOTIFICATIONS"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#1A0F3C"
+        }
+      ],
+      "expo-secure-store",
+      "expo-notifications",
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "276fce8a-6885-4215-9f86-c75d0404de1f"
+      }
+    }
+  }
+}
