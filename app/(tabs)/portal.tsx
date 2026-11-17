@@ -9,7 +9,6 @@ import {
   Modal,
   ActivityIndicator,
   Platform,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -22,6 +21,7 @@ import { useCampusData } from '@/context/CampusDataContext';
 import { Header } from '@/components/common/Header';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { parseTimeToDate } from '@/utils/lectureUtils';
 import { scheduleAcademicPushNotifications } from '@/services/notificationService';
 import {
@@ -43,7 +43,10 @@ import {
   CampusEvent,
   Opportunity,
   Quest,
+  SAMPLE_QUESTS,
+  SAMPLE_BADGES,
 } from '@/constants/CampusData';
+import { aggregateScoreFromCgpa, classificationFromCgpa } from '@/utils/cgpa';
 
 type PortalOption =
   | 'timetable'
@@ -199,6 +202,7 @@ export default function PortalScreen() {
 
   // Portal: Subject details edit (shared by marks + attendance)
   const [subjectEditModalVisible, setSubjectEditModalVisible] = useState(false);
+  const [subjectDeleteModalVisible, setSubjectDeleteModalVisible] = useState(false);
   const [editingSubjectCode, setEditingSubjectCode] = useState('');
   const [editSubjectCode, setEditSubjectCode] = useState('');
   const [editSubjectTitle, setEditSubjectTitle] = useState('');
@@ -390,20 +394,7 @@ export default function PortalScreen() {
 
   const handleConfirmDeleteSubject = () => {
     if (!editingSubjectCode) return;
-    Alert.alert(
-      'Delete Subject',
-      `Delete ${editingSubjectCode} and remove its timetable slots, attendance, marks and assignments across the app? Notes and PYQs are kept.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            handleDeleteSubject();
-          },
-        },
-      ]
-    );
+    setSubjectDeleteModalVisible(true);
   };
 
   const handleDeleteSubject = async () => {
@@ -995,6 +986,7 @@ export default function PortalScreen() {
           const max = Number(editingItem.maxMarks) || 175;
           const pct = Math.round((total / max) * 1000) / 10;
           const grade = pct >= 90 ? 'O' : pct >= 80 ? 'A+' : pct >= 70 ? 'A' : pct >= 60 ? 'B+' : 'B';
+          const studentCgpa = students.find((s) => s.id === editingItem.studentId)?.cgpa;
           const calcItem: ExaminationMark = {
             ...editingItem,
             internal1: int1,
@@ -1006,6 +998,10 @@ export default function PortalScreen() {
             percentage: pct,
             grade: grade as any,
             status: pct >= 85 ? 'Distinction' : pct >= 60 ? 'First Class' : 'Pass',
+            cgpa: studentCgpa,
+            aggregateScore: studentCgpa != null ? aggregateScoreFromCgpa(studentCgpa) : undefined,
+            aggregateClassification:
+              studentCgpa != null ? classificationFromCgpa(studentCgpa) : undefined,
           };
           if (isNewItem) {
             calcItem.id = `mrk_${Date.now()}`;
@@ -1131,27 +1127,91 @@ export default function PortalScreen() {
           break;
         }
         case 'users': {
+          let savedStudentId: string | null = null;
           if (editingItem.role === 'student') {
             let updated = [...students];
             if (isNewItem) {
+              savedStudentId = `usr_student_${Date.now()}`;
               updated = [
                 {
                   ...editingItem,
-                  id: `usr_student_${Date.now()}`,
+                  id: savedStudentId,
                   role: 'student',
                   attendancePct: 85,
-                  xpPoints: 500,
-                  badgeCount: 2,
+                  xpPoints: Number(editingItem.xpPoints) || 500,
+                  badgeCount: Number(editingItem.badgeCount) || 2,
+                  cgpa: Number(editingItem.cgpa) || 8.5,
                 },
                 ...updated,
               ];
             } else {
-              updated = updated.map((s) => (s.id === editingItem.id ? editingItem : s));
+              savedStudentId = editingItem.id;
+              const parsed = {
+                ...editingItem,
+                xpPoints: Number(editingItem.xpPoints) || 0,
+                cgpa: Number(editingItem.cgpa) || 0,
+                badgeCount: Number(editingItem.badgeCount) || 0,
+              };
+              updated = updated.map((s) => (s.id === editingItem.id ? parsed : s));
             }
             await LocalCampusDB.setStudents(updated);
+
+            // Sync progress records so Quest/Leaderboard reflect the edit instantly
+            const savedStudent =
+              updated.find((s) => s.id === savedStudentId) || students.find((s) => s.id === savedStudentId);
+            const progress = await LocalCampusDB.getStudentProgressRecords();
+            const byId = new Map(progress.map((p) => [p.studentId, p]));
+            const synced = updated.map((s) => {
+              const rec = byId.get(s.id);
+              const baseXp = Number(s.xpPoints) || 0;
+              if (rec) {
+                return {
+                  ...rec,
+                  studentName: s.fullName,
+                  studentRollNo: s.rollNo,
+                  department: s.department,
+                  xp: baseXp,
+                };
+              }
+              return {
+                id: `prog_${s.id}`,
+                studentId: s.id,
+                studentName: s.fullName,
+                studentRollNo: s.rollNo,
+                department: s.department,
+                xp: baseXp,
+                quests: SAMPLE_QUESTS.map((q) => ({ ...q })),
+                badges: SAMPLE_BADGES.map((b, bi) => ({
+                  ...b,
+                  unlocked: bi < (s.badgeCount ?? 0),
+                })),
+              };
+            });
+            await LocalCampusDB.setStudentProgressRecords(synced);
+
+            // Re-stamp aggregate score/classification for that student's marks
+            if (savedStudentId) {
+              const studentCgpa = Number(
+                updated.find((s) => s.id === savedStudentId)?.cgpa ?? savedStudent?.cgpa ?? 0
+              );
+              const allMarks = await LocalCampusDB.getExaminationMarks();
+              const nextMarks = allMarks.map((m) =>
+                m.studentId === savedStudentId
+                  ? {
+                      ...m,
+                      cgpa: studentCgpa,
+                      aggregateScore: aggregateScoreFromCgpa(studentCgpa),
+                      aggregateClassification: classificationFromCgpa(studentCgpa),
+                    }
+                  : m
+              );
+              await LocalCampusDB.setExaminationMarks(nextMarks);
+              setMarks(nextMarks);
+            }
           } else {
             let updated = [...faculties];
             if (isNewItem) {
+              savedStudentId = null;
               updated = [
                 {
                   ...editingItem,
@@ -1585,8 +1645,7 @@ export default function PortalScreen() {
                       style={[
                         styles.calEditBtn,
                         {
-                          backgroundColor: isDark ? '#1F2937' : '#F0F9FF',
-                          borderColor: '#BAE6FD',
+                          backgroundColor: isDark ? '#1F2937' : '#F0F9FF'
                         },
                       ]}
                       onPress={() => handleOpenEditCalendar(evt)}
@@ -3135,6 +3194,23 @@ export default function PortalScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Delete subject confirmation (in-app prompt) */}
+      <ConfirmModal
+        visible={subjectDeleteModalVisible}
+        title="Delete Subject"
+        description={`Delete ${editingSubjectCode} and remove its timetable slots, attendance, marks and assignments across the app? Notes and PYQs are kept.`}
+        items={['Timetable slots removed', 'Attendance removed', 'Exam marks removed', 'Assignments removed']}
+        confirmLabel="Delete Subject"
+        cancelLabel="Cancel"
+        icon="trash"
+        destructive
+        onConfirm={async () => {
+          await handleDeleteSubject();
+          setSubjectDeleteModalVisible(false);
+        }}
+        onCancel={() => setSubjectDeleteModalVisible(false)}
+      />
 
       {/* Add Exam Marks - Subject Picker Modal */}
       <Modal

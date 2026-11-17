@@ -27,7 +27,7 @@ export default function DiscussionsScreen() {
   const params = useLocalSearchParams<{ clubId?: string }>();
   const { user, role } = useAuth();
   const { colors, isDark } = useAppTheme();
-  const { discussions, clubs, createDiscussionPost, addDiscussionReply } = useCampusData();
+  const { discussions, clubs, createDiscussionPost, addDiscussionReply, privateChannels, privateMessages } = useCampusData();
   const { showNotice } = useNotice();
 
   // null = community list, CAMPUS_FORUM_ID = campus-wide, otherwise a club id
@@ -40,6 +40,24 @@ export default function DiscussionsScreen() {
       pathname: '/screens/discussions',
       params: { clubId: communityId },
     });
+  };
+
+  const myPrivateChannels = privateChannels.filter((c) =>
+    c.participantIds.includes(user.id)
+  );
+  const reportedForAdmin = privateChannels.filter(
+    (c) => c.reported && !c.participantIds.includes(user.id)
+  );
+  const getOtherParticipantName = (channel: (typeof privateChannels)[number]) => {
+    const idx = channel.participantIds.findIndex((id) => id !== user.id);
+    return channel.participantNames[idx] || channel.participantNames[0] || 'Private channel';
+  };
+  const getLastMessage = (channelId: string) => {
+    const msg = privateMessages
+      .filter((m) => m.channelId === channelId)
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    return msg?.text || 'No messages yet';
   };
 
   const [newPostModal, setNewPostModal] = useState(false);
@@ -312,6 +330,99 @@ export default function DiscussionsScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {!isForumView && (
           <>
+            {myPrivateChannels.length > 0 && (
+              <>
+                <Text style={[styles.sectionHeading, { color: colors.text }]}>
+                  Private Messages ({myPrivateChannels.length})
+                </Text>
+                {myPrivateChannels.map((channel) => (
+                  <TouchableOpacity
+                    key={channel.id}
+                    activeOpacity={0.8}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/screens/private-chat' as any,
+                        params: { channelId: channel.id },
+                      })
+                    }
+                    style={[
+                      styles.clubCard,
+                      { backgroundColor: colors.card, borderColor: colors.cardBorder },
+                    ]}
+                  >
+                    <View style={styles.clubHeader}>
+                      <View
+                        style={[
+                          styles.clubIconBox,
+                          { backgroundColor: isDark ? '#1A0F3C' : '#EEF2FF' },
+                        ]}
+                      >
+                        <Ionicons name="person-circle-outline" size={24} color={colors.primary} />
+                      </View>
+                      <View style={{ flex: 1, paddingLeft: 12 }}>
+                        <Badge label="Private" variant="info" size="small" />
+                        <Text style={[styles.clubName, { color: colors.text, marginTop: 3 }]}>
+                          {getOtherParticipantName(channel)}
+                        </Text>
+                        <Text style={[styles.clubSub, { color: colors.textSecondary }]} numberOfLines={1}>
+                          {getLastMessage(channel.id)}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+
+            {role === 'admin' && reportedForAdmin.length > 0 && (
+              <>
+                <Text style={[styles.sectionHeading, { color: colors.text }]}>
+                  Reported Private Channels ({reportedForAdmin.length})
+                </Text>
+                {reportedForAdmin.map((channel) => (
+                  <TouchableOpacity
+                    key={channel.id}
+                    activeOpacity={0.8}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/screens/private-chat' as any,
+                        params: { channelId: channel.id },
+                      })
+                    }
+                    style={[
+                      styles.clubCard,
+                      {
+                        backgroundColor: isDark ? '#1A0F3C' : '#FEF2F2',
+                        borderColor: '#DC2626',
+                      },
+                    ]}
+                  >
+                    <View style={styles.clubHeader}>
+                      <View
+                        style={[
+                          styles.clubIconBox,
+                          { backgroundColor: isDark ? '#3F1D1D' : '#FEE2E2' },
+                        ]}
+                      >
+                        <Ionicons name="shield-half-outline" size={24} color="#DC2626" />
+                      </View>
+                      <View style={{ flex: 1, paddingLeft: 12 }}>
+                        <Badge label="Reported" variant="danger" size="small" />
+                        <Text style={[styles.clubName, { color: colors.text, marginTop: 3 }]}>
+                          {channel.participantNames.join(' ↔ ')}
+                        </Text>
+                        <Text style={[styles.clubSub, { color: colors.textSecondary }]}>
+                          Tap to review messages (read-only)
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+
             {role === 'admin' && (
               <View
                 style={[
@@ -321,7 +432,7 @@ export default function DiscussionsScreen() {
               >
                 <Ionicons name="shield-checkmark" size={16} color="#7A3CFF" />
                 <Text style={[styles.adminBannerText, { color: colors.text }]}>
-                  Admin view | all communities, discussions and replies
+                  Admin view • All communities, discussions and replies are visible
                 </Text>
               </View>
             )}

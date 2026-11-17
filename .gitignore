@@ -48,3 +48,10 @@ keystores/
 
 AGENTS.md
 opencode.json
+plan.md
+plan-final.md
+.env
+server/.env
+
+scripts/
+problems/

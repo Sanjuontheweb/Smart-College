@@ -7,7 +7,9 @@ import { useCampusData } from '@/context/CampusDataContext';
 import { useNotice } from '@/context/NoticeContext';
 import { useAppTheme } from '@/context/ThemeContext';
 import { openStudyMaterial } from '@/services/documentService';
-import { isSameFacultyName } from '@/utils/lectureUtils';
+import { isSameFacultyName, parseCalendarDate, parseCalendarRangeEnd } from '@/utils/lectureUtils';
+import { getSubjectColor } from '@/utils/subjectColors';
+import { aggregateScoreFromCgpa, classificationFromCgpa } from '@/utils/cgpa';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, useMemo } from 'react';
@@ -26,7 +28,7 @@ import {
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-type TabSegment = 'timetable' | 'attendance' | 'marks' | 'assignments' | 'materials';
+type TabSegment = 'timetable' | 'attendance' | 'marks' | 'assignments' | 'materials' | 'calendar';
 
 export default function AcademicsScreen() {
   const insets = useSafeAreaInsets();
@@ -36,6 +38,7 @@ export default function AcademicsScreen() {
   const { showNotice } = useNotice();
   const {
     timetable,
+    calendarEvents,
     attendance,
     examinationMarks,
     getStudentExaminationMarks,
@@ -82,8 +85,42 @@ export default function AcademicsScreen() {
   const [selectedCourseRoster, setSelectedCourseRoster] = useState<{ courseCode: string; courseTitle: string } | null>(null);
   const [markingStudentId, setMarkingStudentId] = useState<string | null>(null);
 
-  // Faculty marks view state
-  const [facultyMarksSubject, setFacultyMarksSubject] = useState<string>('');
+  // Faculty marks collapse state
+  const [expandedMarksSubjects, setExpandedMarksSubjects] = useState<Set<string>>(new Set());
+  const [collapsedAttendanceSubjects, setCollapsedAttendanceSubjects] = useState<Set<string>>(new Set());
+
+  // Academic calendar state
+  const [calendarCursor, setCalendarCursor] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState<number>(new Date().getDate());
+
+  const toggleAttendanceCollapsed = (courseCode: string) => {
+    setCollapsedAttendanceSubjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(courseCode)) {
+        next.delete(courseCode);
+      } else {
+        next.add(courseCode);
+      }
+      return next;
+    });
+  };
+
+  const toggleMarksExpanded = (courseCode: string) => {
+    setExpandedMarksSubjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(courseCode)) {
+        next.delete(courseCode);
+      } else {
+        next.add(courseCode);
+      }
+      return next;
+    });
+  };
 
   // Assignment grading modal state (Faculty)
   const [gradeModal, setGradeModal] = useState(false);
@@ -121,7 +158,7 @@ export default function AcademicsScreen() {
     await markStudentAttendance(studentId, selectedCourseRoster.courseCode, isPresent);
     setMarkingStudentId(null);
     showNotice({
-      title: isPresent ? 'Marked Present ✅' : 'Marked Absent ❌',
+      title: isPresent ? 'Marked Present ?' : 'Marked Absent ?',
       message: `Attendance recorded for ${students.find(s => s.id === studentId)?.fullName || studentId}.`,
       type: 'success',
     });
@@ -150,7 +187,7 @@ export default function AcademicsScreen() {
     gradeAssignment(gradingAsg.id, score, gradeFeedback.trim() || 'Evaluated and marked.');
     setGradeModal(false);
     showNotice({
-      title: 'Assignment Graded! 📝',
+      title: 'Assignment Graded! ??',
       message: `Allotted ${score}/${gradingAsg.maxMarks} marks for "${gradingAsg.title}".`,
       type: 'success',
     });
@@ -211,7 +248,7 @@ export default function AcademicsScreen() {
       facultyName: user.fullName || 'Faculty',
       title: newAsgTitle.trim(),
       description: newAsgDesc.trim(),
-      dueDate: `${newAsgDue} • 11:59 PM`,
+      dueDate: `${newAsgDue} � 11:59 PM`,
       maxMarks: 25,
     });
     setNewAsgTitle('');
@@ -231,7 +268,7 @@ export default function AcademicsScreen() {
       setSubmitModal(false);
       setSubmissionNote('');
       showNotice({
-        title: 'Assignment Submitted! 🚀',
+        title: 'Assignment Submitted! ??',
         message: 'Your assignment submission has been logged and awarded +50 XP!',
         type: 'quest',
         xpReward: 50,
@@ -240,10 +277,6 @@ export default function AcademicsScreen() {
   };
 
   // Compute student examination marks stats
-  const totalEarnedMarks = activeStudentMarks.reduce((sum, m) => sum + m.totalMarks, 0);
-  const totalMaxMarks = activeStudentMarks.reduce((sum, m) => sum + m.maxMarks, 0);
-  const overallMarksPct =
-    totalMaxMarks > 0 ? Math.round((totalEarnedMarks / totalMaxMarks) * 1000) / 10 : 87.4;
 
   // Staff: detect subjects (faculty sees own subjects, admin sees all)
   const facultySubjects = useMemo(() => {
@@ -281,17 +314,6 @@ export default function AcademicsScreen() {
     return codes;
   }, [role, timetable, attendance, examinationMarks, assignments, user.fullName]);
 
-  // Staff: set default subject on load (and recover if the selected subject was removed)
-  useEffect(() => {
-    if (
-      role !== 'student' &&
-      facultySubjects.length > 0 &&
-      !facultySubjects.includes(facultyMarksSubject)
-    ) {
-      setFacultyMarksSubject(facultySubjects[0]);
-    }
-  }, [facultySubjects, role, facultyMarksSubject]);
-
   // Staff attendance: every subject handled by the viewer, with the full student roster
   const staffAttendanceSubjects = useMemo(() => {
     if (role === 'student') return [];
@@ -299,16 +321,6 @@ export default function AcademicsScreen() {
     const subjects: { courseCode: string; courseTitle: string; facultyName?: string }[] = [];
     const known = new Set<string>();
 
-    attendance.forEach((rec) => {
-      if ((role === 'admin' || allowed.has(rec.courseCode)) && !known.has(rec.courseCode)) {
-        known.add(rec.courseCode);
-        subjects.push({
-          courseCode: rec.courseCode,
-          courseTitle: rec.courseTitle,
-          facultyName: rec.facultyName,
-        });
-      }
-    });
     timetable.forEach((slot) => {
       if ((role === 'admin' || allowed.has(slot.courseCode)) && !known.has(slot.courseCode)) {
         known.add(slot.courseCode);
@@ -316,6 +328,16 @@ export default function AcademicsScreen() {
           courseCode: slot.courseCode,
           courseTitle: slot.courseTitle,
           facultyName: slot.facultyName,
+        });
+      }
+    });
+    attendance.forEach((rec) => {
+      if ((role === 'admin' || allowed.has(rec.courseCode)) && !known.has(rec.courseCode)) {
+        known.add(rec.courseCode);
+        subjects.push({
+          courseCode: rec.courseCode,
+          courseTitle: rec.courseTitle,
+          facultyName: rec.facultyName,
         });
       }
     });
@@ -343,25 +365,74 @@ export default function AcademicsScreen() {
     }));
   }, [role, staffAttendanceSubjects, students, getStudentAttendanceRecords, attendance]);
 
-  // Staff: students with their marks for the selected subject
-  const facultySubjectStudentMarks = useMemo(() => {
-    if (role === 'student' || !facultyMarksSubject) return [];
-    return students.map((s) => {
-      const mark = examinationMarks.find(
-        (m) => m.studentId === s.id && m.courseCode === facultyMarksSubject
-      );
-      return { student: s, mark };
-    });
-  }, [role, facultyMarksSubject, students, examinationMarks]);
+  const marksSubjectDetails = (subjectCode: string) => {
+    const slot = timetable.find((s) => s.courseCode === subjectCode);
+    const att = attendance.find((a) => a.courseCode === subjectCode);
+    const mark = examinationMarks.find((m) => m.courseCode === subjectCode);
+    return {
+      title: slot?.courseTitle || att?.courseTitle || mark?.courseTitle || subjectCode,
+      facultyName: att?.facultyName || slot?.facultyName,
+    };
+  };
 
-  // Faculty: top scorer for the selected subject
-  const facultyTopScorer = useMemo(() => {
-    const withMarks = facultySubjectStudentMarks.filter((x) => x.mark);
-    if (!withMarks.length) return null;
-    return withMarks.reduce((best, cur) =>
-      (cur.mark!.percentage ?? 0) > (best.mark!.percentage ?? 0) ? cur : best
-    );
-  }, [facultySubjectStudentMarks]);
+  // Academic calendar helpers
+  const calendarMonthLabel = calendarCursor.toLocaleDateString(undefined, {
+    month: 'long',
+    year: 'numeric',
+  });
+  const calendarYearNow = new Date().getFullYear();
+  const calendarMonthNow = new Date().getMonth();
+  const calendarDays = useMemo(() => {
+    const year = calendarCursor.getFullYear();
+    const month = calendarCursor.getMonth();
+    const total = new Date(year, month + 1, 0).getDate();
+    const offset = (new Date(year, month, 1).getDay() + 6) % 7;
+    const cells: { day: number | null; events: typeof calendarEvents }[] = [];
+    for (let i = 0; i < offset; i++) cells.push({ day: null, events: [] });
+    for (let day = 1; day <= total; day++) {
+      const target = new Date(year, month, day);
+      const events = calendarEvents.filter((evt) => {
+        const start = parseCalendarDate(evt.startDate || evt.date);
+        if (!start) return false;
+        const end = evt.endDate
+          ? parseCalendarDate(evt.endDate)
+          : parseCalendarRangeEnd(evt.date) || start;
+        if (!end) return false;
+        const s = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+        const e = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+        const t = new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime();
+        return t >= s && t <= e;
+      });
+      cells.push({ day, events });
+    }
+    return cells;
+  }, [calendarCursor, calendarEvents]);
+  const selectedCalendarEvents =
+    calendarDays.find((cell) => cell.day === selectedCalendarDay)?.events ?? [];
+  const isCalendarToday = (day: number) =>
+    calendarCursor.getFullYear() === calendarYearNow &&
+    calendarCursor.getMonth() === calendarMonthNow &&
+    day === new Date().getDate();
+  const changeCalendarMonth = (delta: number) => {
+    const next = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + delta, 1);
+    setCalendarCursor(next);
+    const max = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+    setSelectedCalendarDay((d) => Math.min(d, max));
+  };
+  const getCalendarEventColor = (type?: string) => {
+    switch (type) {
+      case 'Holiday':
+        return '#EF4444';
+      case 'Exam':
+        return '#F59E0B';
+      case 'Classes Resume':
+        return '#10B981';
+      case 'Cultural Fest':
+        return '#7C3AED';
+      default:
+        return '#4F46E5';
+    }
+  };
 
   return (
     <View style={[styles.safeArea, { backgroundColor: colors.background }]}>
@@ -385,6 +456,7 @@ export default function AcademicsScreen() {
             { id: 'marks', label: 'Exam Marks', icon: 'stats-chart-outline' },
             { id: 'assignments', label: 'Assignments', icon: 'document-text-outline' },
             { id: 'materials', label: 'All Study Materials', icon: 'book-outline' },
+            { id: 'calendar', label: 'Calendar', icon: 'calendar-outline' },
           ].map((tab) => {
             const isSelected = activeSegment === tab.id;
             return (
@@ -470,12 +542,14 @@ export default function AcademicsScreen() {
                 </Text>
               </Card>
             ) : (
-              filteredTimetable.map((slot) => (
+              filteredTimetable.map((slot) => {
+                const slotColor = getSubjectColor(slot.courseCode, colors, isDark);
+                return (
                 <Card
                   key={slot.id}
                   style={{
-                    backgroundColor: colors.card,
-                    borderColor: colors.cardBorder,
+                    backgroundColor: slotColor.bg,
+                    borderColor: slotColor.border,
                     marginBottom: 12,
                   }}
                 >
@@ -495,19 +569,20 @@ export default function AcademicsScreen() {
                     <View style={styles.slotDivider} />
 
                     <View style={styles.slotDetails}>
-                      <Text style={[styles.courseCode, { color: colors.primary }]}>
+                      <Text style={[styles.courseCode, { color: slotColor.accent }]}>
                         {slot.courseCode}
                       </Text>
                       <Text style={[styles.courseTitle, { color: colors.text }]}>
                         {slot.courseTitle}
                       </Text>
                       <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                        📍 {slot.room} • Faculty: {slot.facultyName}
+                        ?? {slot.room} � Faculty: {slot.facultyName}
                       </Text>
                     </View>
                   </View>
                 </Card>
-              ))
+                );
+              })
             )}
           </View>
         )}
@@ -535,10 +610,17 @@ export default function AcademicsScreen() {
                     </Text>
                   </Card>
                 )}
-                {staffAttendanceMatrix.map((sub) => (
+                {staffAttendanceMatrix.map((sub) => {
+                  const isCollapsed = collapsedAttendanceSubjects.has(sub.courseCode);
+                  const subColor = getSubjectColor(sub.courseCode, colors, isDark);
+                  return (
                   <Card
                     key={sub.courseCode}
-                    style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, marginBottom: 12 }}
+                    style={{
+                      backgroundColor: subColor.bg,
+                      borderColor: subColor.border,
+                      marginBottom: 12,
+                    }}
                   >
                     <View style={styles.attRow}>
                       <View style={{ flex: 1 }}>
@@ -555,11 +637,25 @@ export default function AcademicsScreen() {
                           {sub.courseTitle}
                         </Text>
                         <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                          {sub.facultyName || 'Department Faculty'} · {sub.roster.length} students
+                          {sub.facultyName || 'Department Faculty'} � {sub.roster.length} students
                         </Text>
                       </View>
+                      <TouchableOpacity
+                        style={{ alignSelf: 'flex-start', padding: 4 }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityLabel={isCollapsed ? 'Expand student roster' : 'Collapse student roster'}
+                        onPress={() => toggleAttendanceCollapsed(sub.courseCode)}
+                      >
+                        <Ionicons
+                          name={isCollapsed ? 'chevron-down' : 'chevron-up'}
+                          size={20}
+                          color={colors.textSecondary}
+                        />
+                      </TouchableOpacity>
                     </View>
 
+                    {!isCollapsed && (
+                      <View>
                     <View style={{ marginTop: 10, gap: 8 }}>
                       {sub.roster.length === 0 && (
                         <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
@@ -584,7 +680,7 @@ export default function AcademicsScreen() {
                             </Text>
                             <Text style={{ color: colors.textSecondary, fontSize: 11 }}>
                               {student.rollNo || student.id}
-                              {total > 0 ? ` · ${attended}/${total} classes` : ' · Not marked'}
+                              {total > 0 ? ` � ${attended}/${total} classes` : ' � Not marked'}
                             </Text>
                           </View>
                           {percentage === null ? (
@@ -599,7 +695,7 @@ export default function AcademicsScreen() {
                       ))}
                     </View>
 
-                    {role === 'faculty' && (
+                    {!isCollapsed && role === 'faculty' && (
                       <View style={styles.facultyMarkRow}>
                         <TouchableOpacity
                           style={[styles.attBtn, { backgroundColor: '#ECFDF5', borderColor: '#059669', paddingVertical: 8 }]}
@@ -612,8 +708,11 @@ export default function AcademicsScreen() {
                         </TouchableOpacity>
                       </View>
                     )}
+                      </View>
+                    )}
                   </Card>
-                ))}
+                  );
+                })}
               </View>
             )}
 
@@ -629,12 +728,14 @@ export default function AcademicsScreen() {
               </Card>
             )}
 
-            {role === 'student' && (studentAttendanceRecords as AttendanceRecord[]).map((rec: AttendanceRecord) => (
+            {role === 'student' && (studentAttendanceRecords as AttendanceRecord[]).map((rec: AttendanceRecord) => {
+              const recColor = getSubjectColor(rec.courseCode, colors, isDark);
+              return (
               <Card
                 key={rec.courseCode}
                 style={{
-                  backgroundColor: colors.card,
-                  borderColor: colors.cardBorder,
+                  backgroundColor: recColor.bg,
+                  borderColor: recColor.border,
                   marginBottom: 12,
                 }}
               >
@@ -659,7 +760,7 @@ export default function AcademicsScreen() {
                       {rec.courseTitle}
                     </Text>
                     <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                      Attended {rec.attended} of {rec.total} classes • Faculty: {rec.facultyName}
+                      Attended {rec.attended} of {rec.total} classes � Faculty: {rec.facultyName}
                     </Text>
                   </View>
 
@@ -677,12 +778,13 @@ export default function AcademicsScreen() {
                         },
                       ]}
                     >
-                      {rec.total > 0 ? `${rec.percentage}%` : '—'}
+                      {rec.total > 0 ? `${rec.percentage}%` : '�'}
                     </Text>
                   </View>
                 </View>
               </Card>
-            ))}
+              );
+            })}
           </View>
         )}
 
@@ -694,159 +796,206 @@ export default function AcademicsScreen() {
             {role !== 'student' ? (
               /* ---- FACULTY / ADMIN VIEW: top scorer hero + student list ---- */
               <View>
-                {/* Subject selector pills */}
-                {facultySubjects.length > 1 && (
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={{ gap: 8, marginBottom: 12 }}
-                  >
-                    {facultySubjects.map((code) => {
-                      const isActive = code === facultyMarksSubject;
-                      return (
-                        <TouchableOpacity
-                          key={code}
-                          style={{
-                            paddingHorizontal: 14,
-                            paddingVertical: 7,
-                            borderRadius: 8,
-                            backgroundColor: isActive ? colors.primary : colors.card,
-                            borderWidth: 1,
-                            borderColor: isActive ? colors.primary : colors.border,
-                          }}
-                          onPress={() => setFacultyMarksSubject(code)}
-                        >
-                          <Text style={{ color: isActive ? '#FFF' : colors.text, fontWeight: '800', fontSize: 12 }}>
-                            {code}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                )}
-
-                {/* Top scorer hero card */}
-                {facultyTopScorer && facultyTopScorer.mark && (
-                  <Card
-                    variant="elevated"
-                    style={{
-                      backgroundColor: isDark ? '#1A0F3C' : '#EEF2FF',
-                      borderColor: '#7A3CFF',
-                      borderWidth: 2,
-                      marginBottom: 16,
-                    }}
-                  >
-                    <View style={styles.marksHeroTop}>
-                      <View>
-                        <Text style={[styles.marksHeroTitle, { color: isDark ? '#DDD6FE' : '#4338CA' }]}>
-                          🏆 Top Scorer — {facultyMarksSubject}
-                        </Text>
-                        <Text style={[styles.marksHeroSub, { color: isDark ? '#C4B5FD' : '#6366F1' }]}>
-                          {facultyTopScorer.student.fullName} • {facultyTopScorer.student.rollNo}
-                        </Text>
-                      </View>
-                      <Badge label={`Grade ${facultyTopScorer.mark.grade}`} variant="success" />
-                    </View>
-                    <View style={styles.marksScoreRow}>
-                      <View style={styles.marksScoreItem}>
-                        <Text style={[styles.marksScoreVal, { color: '#059669' }]}>
-                          {facultyTopScorer.mark.totalMarks}/{facultyTopScorer.mark.maxMarks}
-                        </Text>
-                        <Text style={styles.marksScoreLbl}>Total Score</Text>
-                      </View>
-                      <View style={styles.marksDivider} />
-                      <View style={styles.marksScoreItem}>
-                        <Text style={[styles.marksScoreVal, { color: '#2563EB' }]}>
-                          {facultyTopScorer.mark.percentage}%
-                        </Text>
-                        <Text style={styles.marksScoreLbl}>Percentage</Text>
-                      </View>
-                      <View style={styles.marksDivider} />
-                      <View style={styles.marksScoreItem}>
-                        <Text style={[styles.marksScoreVal, { color: '#D97706' }]}>
-                          {facultyTopScorer.mark.status}
-                        </Text>
-                        <Text style={styles.marksScoreLbl}>Classification</Text>
-                      </View>
-                    </View>
-                  </Card>
-                )}
-
-                <View style={styles.sectionHeader}>
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                    Student Marks • {facultyMarksSubject}
-                  </Text>
-                </View>
-
-                {!examinationMarks.some((m) => m.courseCode === facultyMarksSubject) ? (
+                {facultySubjects.length === 0 ? (
                   <Card style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, padding: 24, alignItems: 'center' }}>
-                    <Ionicons name="stats-chart-outline" size={36} color={colors.textSecondary} style={{ marginBottom: 8 }} />
+                    <Ionicons name="book-outline" size={36} color={colors.textSecondary} style={{ marginBottom: 8 }} />
                     <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15, marginBottom: 4 }}>
-                      No Examination Records
+                      No Subjects Found
                     </Text>
                     <Text style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
-                      Exam marks will appear here once they are published by the portal.
-                    </Text>
-                  </Card>
-                ) : facultySubjectStudentMarks.length === 0 ? (
-                  <Card style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, padding: 24, alignItems: 'center' }}>
-                    <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15, marginBottom: 4 }}>
-                      No Students Found
-                    </Text>
-                    <Text style={{ color: colors.textSecondary, fontSize: 13, textAlign: 'center' }}>
-                      Add students from the portal to sync the examination marks record.
+                      Subjects will appear here once a timetable is uploaded.
                     </Text>
                   </Card>
                 ) : (
-                  facultySubjectStudentMarks.map(({ student, mark }) => (
-                    <Card
-                      key={student.id}
-                      style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, marginBottom: 10 }}
-                    >
-                      <View style={styles.marksCardHeader}>
-                        <View style={{ flex: 1 }}>
-                          <View style={styles.attBadgeRow}>
-                            <Badge label={student.rollNo || student.id} variant="primary" />
-                            {mark && <Badge label={`Grade ${mark.grade}`} variant={mark.grade === 'O' || mark.grade === 'A+' ? 'success' : 'info'} />}
+                  facultySubjects.map((code) => {
+                    const subjectColor = getSubjectColor(code, colors, isDark);
+                    const isExpanded = expandedMarksSubjects.has(code);
+                    const details = marksSubjectDetails(code);
+                    const subjectMarkList = students.map((student) => {
+                      const mark = examinationMarks.find(
+                        (m) => m.studentId === student.id && m.courseCode === code
+                      );
+                      return { student, mark };
+                    });
+                    const marked = subjectMarkList.filter((x) => x.mark);
+                    const facultyScorer =
+                      role === 'faculty' && marked.length > 0
+                        ? marked.reduce((best, cur) =>
+                            (cur.mark!.percentage ?? 0) > (best.mark!.percentage ?? 0) ? cur : best
+                          )
+                        : null;
+
+                    return (
+                      <Card
+                        key={code}
+                        style={{
+                          backgroundColor: subjectColor.bg,
+                          borderColor: subjectColor.border,
+                          padding: 4,
+                          marginBottom: 12,
+                        }}
+                      >
+                        <TouchableOpacity
+                          activeOpacity={0.75}
+                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                          accessibilityLabel={
+                            isExpanded ? `Collapse marks for ${code}` : `Expand marks for ${code}`
+                          }
+                          onPress={() => toggleMarksExpanded(code)}
+                          style={{ flexDirection: 'row', alignItems: 'center', padding: 10 }}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <View style={styles.attBadgeRow}>
+                              <Badge label={code} variant="primary" />
+                              <Badge
+                                label={`${marked.length} ${marked.length === 1 ? 'record' : 'records'}`}
+                                variant="neutral"
+                                size="small"
+                              />
+                            </View>
+                            <Text style={[styles.courseTitle, { color: colors.text, marginTop: 4 }]}>
+                              {details.title}
+                            </Text>
+                            {details.facultyName ? (
+                              <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
+                                Faculty: {details.facultyName}
+                              </Text>
+                            ) : null}
                           </View>
-                          <Text style={[styles.courseTitle, { color: colors.text, marginTop: 4 }]}>
-                            {student.fullName}
-                          </Text>
-                        </View>
-                        {mark ? (
-                          <View style={styles.totalBadge}>
-                            <Text style={styles.totalScoreText}>{mark.totalMarks} / {mark.maxMarks}</Text>
-                            <Text style={styles.totalPctText}>{mark.percentage}%</Text>
+                          <Ionicons
+                            name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                            size={20}
+                            color={colors.textSecondary}
+                            style={{ marginLeft: 8 }}
+                          />
+                        </TouchableOpacity>
+
+                        {isExpanded && (
+                          <View style={{ marginTop: 10 }}>
+                            {role === 'faculty' && facultyScorer && facultyScorer.mark && (
+                              <Card
+                                variant="elevated"
+                                style={{
+                                  backgroundColor: isDark ? '#1A0F3C' : '#EEF2FF',
+                                  borderColor: '#7A3CFF',
+                                  borderWidth: 2,
+                                  marginBottom: 14,
+                                }}
+                              >
+                                <View style={styles.marksHeroTop}>
+                                  <View>
+                                    <Text style={[styles.marksHeroTitle, { color: isDark ? '#DDD6FE' : '#4338CA' }]}>
+                                      🏆 Top Scorer — {code}
+                                    </Text>
+                                    <Text style={[styles.marksHeroSub, { color: isDark ? '#C4B5FD' : '#6366F1' }]}>
+                                      {facultyScorer.student.fullName} • {facultyScorer.student.rollNo}
+                                    </Text>
+                                  </View>
+                                  <Badge label={`Grade ${facultyScorer.mark.grade}`} variant="success" />
+                                </View>
+                                <View style={styles.marksScoreRow}>
+                                  <View style={styles.marksScoreItem}>
+                                    <Text style={[styles.marksScoreVal, { color: '#059669' }]}>
+                                      {facultyScorer.mark.totalMarks}/{facultyScorer.mark.maxMarks}
+                                    </Text>
+                                    <Text style={styles.marksScoreLbl}>Total Score</Text>
+                                  </View>
+                                  <View style={styles.marksDivider} />
+                                  <View style={styles.marksScoreItem}>
+                                    <Text style={[styles.marksScoreVal, { color: '#2563EB' }]}>
+                                      {facultyScorer.mark.percentage}%
+                                    </Text>
+                                    <Text style={styles.marksScoreLbl}>Percentage</Text>
+                                  </View>
+                                  <View style={styles.marksDivider} />
+                                  <View style={styles.marksScoreItem}>
+                                    <Text style={[styles.marksScoreVal, { color: '#D97706' }]}>
+                                      {facultyScorer.mark.status}
+                                    </Text>
+                                    <Text style={styles.marksScoreLbl}>Classification</Text>
+                                  </View>
+                                </View>
+                              </Card>
+                            )}
+
+                            {marked.length === 0 ? (
+                              <Card style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, padding: 16, alignItems: 'center' }}>
+                                <Ionicons name="stats-chart-outline" size={30} color={colors.textSecondary} style={{ marginBottom: 6 }} />
+                                <Text style={{ color: colors.text, fontWeight: '700', fontSize: 14, marginBottom: 2 }}>
+                                  No Examination Records
+                                </Text>
+                                <Text style={{ color: colors.textSecondary, fontSize: 12, textAlign: 'center' }}>
+                                  Marks for this subject will appear here once published by the portal.
+                                </Text>
+                              </Card>
+                            ) : (
+                              subjectMarkList.map(({ student, mark }) => (
+                                <Card
+                                  key={student.id}
+                                  style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, marginBottom: 10 }}
+                                >
+                                  <View style={styles.marksCardHeader}>
+                                    <View style={{ flex: 1 }}>
+                                      <View style={styles.attBadgeRow}>
+                                        <Badge label={student.rollNo || student.id} variant="primary" />
+                                        {mark && (
+                                          <Badge
+                                            label={`Grade ${mark.grade}`}
+                                            variant={mark.grade === 'O' || mark.grade === 'A+' ? 'success' : 'info'}
+                                          />
+                                        )}
+                                      </View>
+                                      <Text style={[styles.courseTitle, { color: colors.text, marginTop: 4 }]}>
+                                        {student.fullName}
+                                      </Text>
+                                      {(student.cgpa != null || mark?.cgpa != null) ? (
+                                        <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 2 }}>
+                                          {`Aggregate % � `}
+
+                                        </Text>
+                                      ) : null}
+                                    </View>
+                                    {mark ? (
+                                      <View style={styles.totalBadge}>
+                                        <Text style={styles.totalScoreText}>{mark.totalMarks} / {mark.maxMarks}</Text>
+                                        <Text style={styles.totalPctText}>{mark.percentage}%</Text>
+                                      </View>
+                                    ) : (
+                                      <Text style={{ color: colors.textSecondary, fontSize: 11 }}>No marks</Text>
+                                    )}
+                                  </View>
+                                  {mark && (
+                                    <View style={[styles.marksBreakdownStrip, { backgroundColor: isDark ? '#1F2937' : '#F8FAFC' }]}>
+                                      <View style={styles.breakdownItem}>
+                                        <Text style={[styles.breakdownVal, { color: colors.text }]}>{mark.internal1} / 25</Text>
+                                        <Text style={styles.breakdownLbl}>CIE Test 1</Text>
+                                      </View>
+                                      <View style={styles.breakdownItem}>
+                                        <Text style={[styles.breakdownVal, { color: colors.text }]}>{mark.internal2} / 25</Text>
+                                        <Text style={styles.breakdownLbl}>CIE Test 2</Text>
+                                      </View>
+                                      <View style={styles.breakdownItem}>
+                                        <Text style={[styles.breakdownVal, { color: colors.text }]}>{mark.labInternal} / 25</Text>
+                                        <Text style={styles.breakdownLbl}>Lab / CTA</Text>
+                                      </View>
+                                      <View style={styles.breakdownItem}>
+                                        <Text style={[styles.breakdownVal, { color: '#059669' }]}>{mark.externalExam} / 100</Text>
+                                        <Text style={styles.breakdownLbl}>Final Exam</Text>
+                                      </View>
+                                    </View>
+                                  )}
+                                </Card>
+                              ))
+                            )}
                           </View>
-                        ) : (
-                          <Text style={{ color: colors.textSecondary, fontSize: 11 }}>No marks</Text>
                         )}
-                      </View>
-                      {mark && (
-                        <View style={[styles.marksBreakdownStrip, { backgroundColor: isDark ? '#1F2937' : '#F8FAFC' }]}>
-                          <View style={styles.breakdownItem}>
-                            <Text style={[styles.breakdownVal, { color: colors.text }]}>{mark.internal1} / 25</Text>
-                            <Text style={styles.breakdownLbl}>CIE Test 1</Text>
-                          </View>
-                          <View style={styles.breakdownItem}>
-                            <Text style={[styles.breakdownVal, { color: colors.text }]}>{mark.internal2} / 25</Text>
-                            <Text style={styles.breakdownLbl}>CIE Test 2</Text>
-                          </View>
-                          <View style={styles.breakdownItem}>
-                            <Text style={[styles.breakdownVal, { color: colors.text }]}>{mark.labInternal} / 25</Text>
-                            <Text style={styles.breakdownLbl}>Lab / CTA</Text>
-                          </View>
-                          <View style={styles.breakdownItem}>
-                            <Text style={[styles.breakdownVal, { color: '#059669' }]}>{mark.externalExam} / 100</Text>
-                            <Text style={styles.breakdownLbl}>Final Exam</Text>
-                          </View>
-                        </View>
-                      )}
-                    </Card>
-                  ))
+                      </Card>
+                    );
+                  })
                 )}
               </View>
             ) : (
+
               /* ---- STUDENT VIEW: original grade card + marks list ---- */
               <View>
             {/* Scorecard Hero Banner */}
@@ -865,29 +1014,35 @@ export default function AcademicsScreen() {
                     Semester Examination Grade Card
                   </Text>
                   <Text style={[styles.marksHeroSub, { color: isDark ? '#C4B5FD' : '#6366F1' }]}>
-                    VTU Autonomous Credit System • 4th Semester
+                    VTU Autonomous Credit System � 4th Semester
                   </Text>
                 </View>
-                <Badge label="VERIFIED • COE" variant="success" />
+                <Badge label="VERIFIED � COE" variant="success" />
               </View>
 
               <View style={styles.marksScoreRow}>
                 <View style={styles.marksScoreItem}>
                   <Text style={[styles.marksScoreVal, { color: '#059669' }]}>
-                    {user.cgpa || 8.84}
+                    {students.find((s) => s.id === user.id)?.cgpa ?? user.cgpa ?? 0}
                   </Text>
                   <Text style={styles.marksScoreLbl}>Cumulative CGPA</Text>
                 </View>
                 <View style={styles.marksDivider} />
                 <View style={styles.marksScoreItem}>
                   <Text style={[styles.marksScoreVal, { color: '#2563EB' }]}>
-                    {overallMarksPct}%
+                    {aggregateScoreFromCgpa(
+                      students.find((s) => s.id === user.id)?.cgpa ?? user.cgpa
+                    )}%
                   </Text>
                   <Text style={styles.marksScoreLbl}>Aggregate Score</Text>
                 </View>
                 <View style={styles.marksDivider} />
                 <View style={styles.marksScoreItem}>
-                  <Text style={[styles.marksScoreVal, { color: '#D97706' }]}>Distinction</Text>
+                  <Text style={[styles.marksScoreVal, { color: '#D97706' }]}>
+                    {classificationFromCgpa(
+                      students.find((s) => s.id === user.id)?.cgpa ?? user.cgpa
+                    )}
+                  </Text>
                   <Text style={styles.marksScoreLbl}>Classification</Text>
                 </View>
               </View>
@@ -1056,14 +1211,22 @@ export default function AcademicsScreen() {
 
               {groups.map((grp) => {
                 const isExpanded = expandedAsgSubject === grp.code;
+                const isOthers = grp.code === 'Others';
+                const grpColor = isOthers ? null : getSubjectColor(grp.code, colors, isDark);
                 return (
                   <View
                     key={grp.code}
                     style={[
                       styles.asgSubjectBlock,
                       {
-                        backgroundColor: isDark ? '#161F30' : '#FFFFFF',
-                        borderColor: isExpanded ? colors.primary : colors.cardBorder,
+                        backgroundColor: isOthers
+                          ? isDark ? '#27272A' : '#F4F4F5'
+                          : grpColor!.bg,
+                        borderColor: isExpanded
+                          ? colors.primary
+                          : isOthers
+                            ? colors.border
+                            : grpColor!.border,
                       },
                     ]}
                   >
@@ -1088,14 +1251,14 @@ export default function AcademicsScreen() {
                             backgroundColor:
                               grp.code === 'Others'
                                 ? isDark ? '#3F3F46' : '#F4F4F5'
-                                : isDark ? '#1E3A8A' : '#EFF6FF',
+                                : grpColor!.border,
                           },
                         ]}
                       >
                         <Ionicons
                           name={grp.code === 'Others' ? 'folder-outline' : 'book-outline'}
                           size={20}
-                          color={grp.code === 'Others' ? '#71717A' : '#2563EB'}
+                          color={grp.code === 'Others' ? '#71717A' : grpColor!.accent}
                         />
                       </View>
                       <View style={{ flex: 1, paddingLeft: 10 }}>
@@ -1241,31 +1404,33 @@ export default function AcademicsScreen() {
               </Text>
             </View>
 
-            {studyMaterials.map((mat) => (
+            {studyMaterials.map((mat) => {
+              const matColor = getSubjectColor(mat.courseCode, colors, isDark);
+              return (
               <Card
                 key={mat.id}
                 style={{
-                  backgroundColor: colors.card,
-                  borderColor: colors.cardBorder,
+                  backgroundColor: matColor.bg,
+                  borderColor: matColor.border,
                   marginBottom: 12,
                 }}
               >
                 <View style={styles.matRow}>
-                  <View style={[styles.matIconBox, { backgroundColor: '#FEE2E2' }]}>
-                    <Ionicons name="document-text" size={24} color="#EF4444" />
+                  <View style={[styles.matIconBox, { backgroundColor: matColor.border }]}>
+                    <Ionicons name="document-text" size={24} color={matColor.accent} />
                     <Text style={styles.matExt}>{mat.fileType}</Text>
                   </View>
 
                   <View style={{ flex: 1, paddingLeft: 12 }}>
                     <View style={styles.attBadgeRow}>
                       <Badge label={mat.category} variant="primary" size="small" />
-                      <Text style={[styles.courseCode, { color: colors.primary }]}>
+                      <Text style={[styles.courseCode, { color: matColor.accent }]}>
                         {mat.courseCode}
                       </Text>
                     </View>
                     <Text style={[styles.matTitle, { color: colors.text }]}>{mat.title}</Text>
                     <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                      {mat.fileSize} • Uploaded by {mat.uploadedBy}
+                      {mat.fileSize} � Uploaded by {mat.uploadedBy}
                     </Text>
                   </View>
 
@@ -1273,11 +1438,200 @@ export default function AcademicsScreen() {
                     style={styles.openDocBtn}
                     onPress={() => handleOpenMaterial(mat)}
                   >
-                    <Ionicons name="eye-outline" size={20} color={colors.primary} />
+                    <Ionicons name="eye-outline" size={20} color={matColor.accent} />
                   </TouchableOpacity>
                 </View>
               </Card>
-            ))}
+              );
+            })}
+          </View>
+        )}
+
+        {/* ============================================================== */}
+        {/* 6. ACADEMIC CALENDAR (month grid + selected-day agenda) */}
+        {/* ============================================================== */}
+        {activeSegment === 'calendar' && (
+          <View>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Academic Calendar</Text>
+              <Badge label="Synced through Portal" variant="info" />
+            </View>
+
+            {/* Month card */}
+            <View style={[styles.calendarCard, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
+              <View style={styles.calendarHeader}>
+                <TouchableOpacity
+                  style={[styles.calendarNavBtn, { backgroundColor: colors.searchBarBg }]}
+                  onPress={() => changeCalendarMonth(-1)}
+                  accessibilityLabel="Previous month"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="chevron-back" size={18} color={colors.text} />
+                </TouchableOpacity>
+                <View style={{ alignItems: 'center' }}>
+                  <Text style={[styles.calendarMonth, { color: colors.text }]}>
+                    {calendarMonthLabel}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const now = new Date();
+                      setCalendarCursor(new Date(now.getFullYear(), now.getMonth(), 1));
+                      setSelectedCalendarDay(now.getDate());
+                    }}
+                    accessibilityLabel="Go to today"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Text style={{ color: colors.primary, fontSize: 11, fontWeight: '800' }}>Today</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity
+                  style={[styles.calendarNavBtn, { backgroundColor: colors.searchBarBg }]}
+                  onPress={() => changeCalendarMonth(1)}
+                  accessibilityLabel="Next month"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="chevron-forward" size={18} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Weekday labels */}
+              <View style={styles.calendarWeekRow}>
+                {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label) => (
+                  <Text key={label} style={[styles.calendarWeekday, { color: colors.textSecondary }]}>
+                    {label}
+                  </Text>
+                ))}
+              </View>
+
+              {/* Day grid */}
+              <View style={styles.calendarGrid}>
+                {calendarDays.map((cell, index) => {
+                  if (!cell.day) {
+                    return <View key={`blank-${index}`} style={styles.calendarCell} />;
+                  }
+                  const selected = cell.day === selectedCalendarDay;
+                  const today = isCalendarToday(cell.day);
+                  return (
+                    <TouchableOpacity
+                      key={cell.day}
+                      style={[
+                        styles.calendarCell,
+                        selected && { backgroundColor: isDark ? '#1E1B4B' : '#EEF2FF', borderColor: colors.primary, borderWidth: 1.5 },
+                        today && !selected && { borderColor: colors.primary, borderWidth: 1 },
+                      ]}
+                      onPress={() => setSelectedCalendarDay(cell.day!)}
+                      activeOpacity={0.75}
+                      accessibilityLabel={`${cell.day}, ${cell.events.length} events`}
+                    >
+                      <Text
+                        style={[
+                          styles.calendarDayNum,
+                          { color: selected ? colors.primary : colors.text },
+                          today && { fontWeight: '900' },
+                        ]}
+                      >
+                        {cell.day}
+                      </Text>
+                      <View style={styles.calendarDots}>
+                        {cell.events.slice(0, 3).map((evt, i) => (
+                          <View
+                            key={i}
+                            style={[
+                              styles.calendarDot,
+                              { backgroundColor: getCalendarEventColor(evt.type) },
+                            ]}
+                          />
+                        ))}
+                        {cell.events.length > 3 && (
+                          <Text style={{ fontSize: 8, color: colors.textSecondary, marginLeft: 2 }}>
+                            +{cell.events.length - 3}
+                          </Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Selected day agenda */}
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                {selectedCalendarDay} {calendarMonthLabel.split(' ')[0]} Agenda
+              </Text>
+              <Badge label={`${selectedCalendarEvents.length} ${selectedCalendarEvents.length === 1 ? 'event' : 'events'}`} variant="neutral" />
+            </View>
+            {selectedCalendarEvents.length === 0 ? (
+              <Card
+                style={{
+                  backgroundColor: colors.card,
+                  borderColor: colors.cardBorder,
+                  padding: 20,
+                  alignItems: 'center',
+                }}
+              >
+                <Ionicons name="calendar-outline" size={32} color={colors.textSecondary} style={{ marginBottom: 6 }} />
+                <Text style={{ color: colors.text, fontWeight: '700', marginBottom: 4 }}>
+                  No events scheduled
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 12, textAlign: 'center' }}>
+                  Upload or edit the academic calendar in the Portal and it will appear here instantly.
+                </Text>
+              </Card>
+            ) : (
+              selectedCalendarEvents.map((evt, index) => {
+                const color = getCalendarEventColor(evt.type);
+                return (
+                  <Card
+                    key={evt.id || index}
+                    style={{
+                      backgroundColor: `${color}14`,
+                      borderColor: `${color}55`,
+                      borderRadius: 14,
+                      padding: 12,
+                      marginBottom: 10,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <View
+                        style={{
+                          width: 42,
+                          height: 42,
+                          borderRadius: 12,
+                          backgroundColor: `${color}22`,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          marginRight: 12,
+                        }}
+                      >
+                        <Ionicons
+                          name={(evt.type === 'Holiday' ? 'leaf' : evt.type === 'Exam' ? 'document-text' : 'ribbon') as any}
+                          size={22}
+                          color={color}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 2 }}>
+                          <Badge label={evt.type || 'Event'} variant="primary" size="small" />
+                          {evt.isImportant ? <Badge label="Important" variant="danger" size="small" /> : null}
+                        </View>
+                        <Text style={{ color: colors.text, fontWeight: '800', fontSize: 14 }}>
+                          {evt.title}
+                        </Text>
+                        <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 2 }}>
+                          {evt.date || (evt.startDate ? `${evt.startDate}${evt.endDate ? ` → ${evt.endDate}` : ''}` : '')}
+                        </Text>
+                        {evt.description ? (
+                          <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 4 }} numberOfLines={2}>
+                            {evt.description}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  </Card>
+                );
+              })
+            )}
           </View>
         )}
         </Animated.View>
@@ -1338,7 +1692,7 @@ export default function AcademicsScreen() {
         </View>
       </Modal>
 
-      {/* Faculty Attendance Roster Modal — instant Present/Absent per student */}
+      {/* Faculty Attendance Roster Modal � instant Present/Absent per student */}
       <Modal
         visible={rosterModal}
         transparent
@@ -1362,7 +1716,7 @@ export default function AcademicsScreen() {
                   Mark Attendance
                 </Text>
                 <Text style={[styles.modalSub, { color: colors.textSecondary }]}>
-                  {selectedCourseRoster?.courseCode}: {selectedCourseRoster?.courseTitle} — tap to mark instantly
+                  {selectedCourseRoster?.courseCode}: {selectedCourseRoster?.courseTitle} � tap to mark instantly
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setRosterModal(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -1955,6 +2309,70 @@ const styles = StyleSheet.create({
   },
   openDocBtn: {
     padding: 8,
+  },
+  calendarCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 14,
+  },
+  calendarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  calendarMonth: {
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  calendarNavBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarWeekRow: {
+    flexDirection: 'row',
+    marginBottom: 6,
+  },
+  calendarWeekday: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  calendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  calendarCell: {
+    width: '14.2857%',
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    paddingVertical: 4,
+  },
+  calendarDayNum: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  calendarDots: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+    minHeight: 6,
+  },
+  calendarDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    marginHorizontal: 1,
   },
   modalOverlay: {
     flex: 1,

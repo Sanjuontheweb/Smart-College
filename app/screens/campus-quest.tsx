@@ -155,25 +155,26 @@ export default function CampusQuestScreen() {
               <Badge label={`+${q.xpReward} XP`} variant="warning" />
             </View>
 
-            <View style={styles.progressBg}>
-              <View
-                style={[
-                  styles.progressFill,
-                  {
-                    width: `${Math.min(100, (q.progress / q.maxProgress) * 100)}%`,
-                    backgroundColor: q.completed ? '#10B981' : '#F59E0B',
-                  },
-                ]}
-              />
-            </View>
+            {!isStaff && (
+              <View style={styles.progressBg}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.min(100, (q.progress / q.maxProgress) * 100)}%`,
+                      backgroundColor: q.completed ? '#10B981' : '#F59E0B',
+                    },
+                  ]}
+                />
+              </View>
+            )}
 
+            {!isStaff && (
             <View style={styles.questFooter}>
               <Text style={[styles.progressLabel, { color: colors.textSecondary }]}>
                 Progress: {q.progress} / {q.maxProgress}
               </Text>
-              {isStaff ? (
-                <Badge label="Tracked per student" variant="info" size="small" />
-              ) : q.completed ? (
+              {q.completed ? (
                 <Badge label="Completed ✅" variant="success" />
               ) : q.progress >= q.maxProgress ? (
                 <Button
@@ -194,6 +195,7 @@ export default function CampusQuestScreen() {
                 <Text style={[styles.inProgressText, { color: colors.primary }]}>In Progress</Text>
               )}
             </View>
+            )}
           </Card>
         ))}
 

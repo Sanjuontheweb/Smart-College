@@ -142,3 +142,69 @@ Files: `app/(tabs)/_layout.tsx`, `app/screens/roles.tsx` (new), `app/_layout.tsx
 - Deleting a subject cascades to timetable, attendance, per-student attendance, exam marks, and assignments. Notes/PYQs files are kept.
 - Admin attendance is read-only in Academics; all attendance editing remains in Portal.
 - No font-size changes — only layout fixes around the Add Exam Marks button.
+
+---
+
+# Phase 2 — Implementation Plan (new features)
+
+## Scope
+
+Academics color system + collapsibles, Events/Quest staff polish, Faculty & Cabin Directory upgrades (cabin popup fix, college layout upload, private message channels), Portal XP/CGPA propagation, APK readiness.
+
+## Files we touch
+
+- `utils/subjectColors.ts` (new) — shared deterministic low-tint palette
+- `app/(tabs)/academics.tsx`, `app/(tabs)/events.tsx`, `app/screens/campus-quest.tsx`
+- `app/screens/faculty-directory.tsx`, `app/screens/discussions.tsx`, `app/screens/private-chat.tsx` (new)
+- `app/_layout.tsx`, `services/localDb.ts`, `context/CampusDataContext.tsx`
+- `services/notificationService.ts`, `app/(tabs)/portal.tsx`, `utils/cgpa.ts`
+- `components/ui/ConfirmModal.tsx` (new) — in-app destructive confirmation styled after the sem-end prompt
+- `plan-final.md` (this file)
+
+## 1. Academics: consistent subject colors + collapsibles
+
+- `utils/subjectColors.ts`: deterministic 13-color low-tint palette derived from theme tokens (primary/accent/info/success/warning/danger/role + light success/warning/danger/info tokens). Same code → same color everywhere in Academics; events use sequential cycling.
+- **Timetable**: each subject card tinted (no left accent bar); typography unchanged.
+- **Attendance**: subject card stays (read-only for admin, roster for faculty); chevron collapses/expands only the student roster; tinted per subject. Student list cards use ~4px side gap.
+- **Exam marks**: admin loses the Top Scorer card; faculty keeps it inside the expanded subject. Subject pills replaced by collapsible subject cards (collapsed: code + title + chevron; expanded: the existing student list UI — roll badge, grade, total marks, CIE 1/CIE 2/lab/final exactly as-is, plus empty states per subject). Default collapsed; inner student cards sit ~4px from the subject card edges.
+- **Assignments**: subject dropdown cards tinted; `Others` stays gray with `folder-outline`; all roles.
+- **Study Materials**: tinted by subject (no left accent bar).
+- **Academic Calendar tab**: all roles; unique month-grid view with day cells, event dots, and a selected-day agenda; reads context `calendarEvents` so Portal calendar edits show instantly without reload.
+- **Events**: events/internships/clubs each get sequential theme-derived tints; Portal unchanged.
+- **Campus Quest**: admin/faculty see only title + description + `+XP` badge; progress bar/counter/staff footer hidden; students unchanged.
+
+## 2. Faculty & Cabin Directory
+
+- **Locate Cabin**: popup uses the particular faculty's `cabinLocation` (fallback `Cabin not listed — contact the department office.`); removes the hardcoded tower text.
+- **Confirm modal**: destructive actions (channel delete, layout delete, subject delete) use the shared `ConfirmModal` (sem-end themed), not OS alerts.
+- **Private chat keyboard**: uses the assistant's `KeyboardAvoidingView` pattern (`behavior: height` on Android, `padding` on iOS, `keyboardVerticalOffset`, `isKeyboardVisible` state driving the composer's bottom padding).
+- **College layout**: button at end of directory for any role, `Add College Layout` → uploads PNG/JPEG/PDF → saves directly to the local vault under `COLLEGE_LAYOUT` (no AI analysis, no summary/doubts step) → button becomes `View Layout` + `Delete Layout` (in-app confirm). View modal shows the image (or PDF opener) and a faculty/admin-editable pointers text box below for annotations (students read-only).
+- **Send Message → private discussion channel**: visible only to the current logged-in user and the selected faculty; student↔faculty, faculty↔faculty, admin↔faculty; one channel per pair; capped at 50 channels total. Uses a deterministic ID from sorted participant IDs; re-tapping opens the existing channel.
+- **Private channel UI**: Discussions gains a `Private Messages` section; if reported, admin sees a `Reported Private Channels` section. New stack screen `app/screens/private-chat.tsx`: participant-only conversation, instant send/save in DB, top-right `Delete Channel` (both participants and admin viewer) and `Report`. Report notifies admin; if reported by faculty and the other participant is admin, the channel + messages are deleted immediately. Admin non-participant viewer is read-only but can delete; admin deletion notifies both participants.
+- **Instant behavior**: create/send/delete/report update context state immediately and persist; no reload.
+
+## 3. Portal propagation fixes
+
+- **XP**: `studentProgressList` prefers `s.xpPoints` over stored `rec.xp`; Portal student save also syncs the matching `StudentProgressRecord` (xp/name/roll/dept) and refreshes. Leaderboard + Quest staff view update instantly.
+- **CGPA**: `ExaminationMark` gains optional `cgpa`, `aggregateScore`, `aggregateClassification`. Formula: `round1((cgpa - 0.75) * 10)`, clamped 0–100; bands: ≥8.5 Distinction, ≥7.5 First Class, ≥6.5 Second Class, else Pass. Portal marks save and Portal student save both recompute for that student and persist in one write; seed marks fall back to computing from profile. Academics marks UI shows aggregate/classification per student and in the student hero.
+- All Portal paths keep `refreshAllData()`/`loadActiveData()`; private channels + college layout are context-driven.
+
+## 4. APK readiness
+
+- One-off admin report notification (`trigger: null`, web-guarded, try/catch).
+- Layout stored in local vault.
+- No new dependencies; Portal colors untouched.
+
+## Decisions
+
+- CGPA formula accepted (`(cgpa − 0.75) × 10`; 8.5/7.5/6.5 bands).
+- 8-tint palette.
+- Layout AI accepts images **and PDF**.
+- Admin deleting a reported channel notifies both participants.
+- Private channels: one per user pair, 50 max, any non-self role with any faculty.
+- Portal not recolored; no font-size changes; notes/PYQs kept on subject delete.
+
+## Validation
+
+- `cmd /c "npx.cmd tsc --noEmit"`, `cmd /c "npx.cmd expo lint"` (6 known errors only).
+- Manual QA: academics accordions + colors; admin vs faculty marks; events tints; quest staff view; cabin popup; layout upload/view/delete; private channel flow (create/send/delete/report, admin read-only, immediate delete for faculty→admin report); portal XP/CGPA propagation; APK smoke test.

@@ -264,6 +264,57 @@ export const scheduleAcademicPushNotifications = async (): Promise<{
 };
 
 /**
+ * One-off alert to the admin device when a private channel is reported
+ */
+export const sendAdminPrivateReportNotification = async (
+  reporterName?: string,
+  channelName?: string
+): Promise<void> => {
+  if (Platform.OS === 'web') return;
+
+  try {
+    await initNotifications();
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Private Channel Reported',
+        body: `${reporterName || 'A user'} reported ${channelName ? `"${channelName}"` : 'a private channel'}. Open Discussions → Reported Private Channels to review.`,
+        data: { type: 'private_channel_report' },
+        sound: 'default',
+      },
+      trigger: null,
+    });
+  } catch (err) {
+    console.warn('[Notifications] Failed to send report alert:', err);
+  }
+};
+
+/**
+ * One-off alert sent when the admin removes a reported private channel
+ */
+export const sendPrivateChannelDeletedNotification = async (
+  channelName?: string
+): Promise<void> => {
+  if (Platform.OS === 'web') return;
+
+  try {
+    await initNotifications();
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Private Channel Removed',
+        body: channelName
+          ? `The admin removed the private channel "${channelName}" and its messages.`
+          : 'The admin removed a reported private channel and its messages.',
+        data: { type: 'private_channel_deleted' },
+        sound: 'default',
+      },
+      trigger: null,
+    });
+  } catch (err) {
+    console.warn('[Notifications] Failed to send channel deletion alert:', err);
+  }
+};
+
+/**
  * Immediate test notification helper
  */
 export const triggerTestPushNotification = async (): Promise<void> => {

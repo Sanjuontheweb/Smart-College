@@ -40,6 +40,9 @@ export interface ExaminationMark {
   percentage: number;
   grade: 'O' | 'A+' | 'A' | 'B+' | 'B' | 'C' | 'F';
   status: 'Distinction' | 'First Class' | 'Pass' | 'Backlog';
+  cgpa?: number;
+  aggregateScore?: number;
+  aggregateClassification?: 'Distinction' | 'First Class' | 'Second Class' | 'Pass';
 }
 
 export interface ClubItem {
@@ -99,6 +102,38 @@ export interface CalendarEventItem {
   isImportant?: boolean;
 }
 
+export interface PrivateChannel {
+  id: string;
+  participantIds: string[];
+  participantNames: string[];
+  participantRoles: ('student' | 'faculty' | 'admin')[];
+  createdAt: string;
+  createdBy: string;
+  reported: boolean;
+  reportedBy?: string;
+  reportedByRole?: 'student' | 'faculty' | 'admin';
+  reportedAt?: string;
+}
+
+export interface PrivateMessage {
+  id: string;
+  channelId: string;
+  senderId: string;
+  senderName: string;
+  senderRole: 'student' | 'faculty' | 'admin';
+  text: string;
+  createdAt: string;
+}
+
+export interface CollegeLayout {
+  localUri: string;
+  fileName: string;
+  fileSize: string;
+  summary: string;
+  uploadedAt: string;
+  notes?: string;
+}
+
 const STORAGE_KEYS = {
   STUDENTS: '@sc_local_students_v1',
   FACULTIES: '@sc_local_faculties_v1',
@@ -118,6 +153,9 @@ const STORAGE_KEYS = {
   STUDENT_PROGRESS: '@sc_local_student_progress_v1',
   ANNOUNCEMENTS: '@sc_local_announcements_v1',
   NOTIFICATION_SCHEDULE: '@sc_local_notification_schedule_v1',
+  PRIVATE_CHANNELS: '@sc_local_private_channels_v1',
+  PRIVATE_MESSAGES: '@sc_local_private_messages_v1',
+  COLLEGE_LAYOUT: '@sc_local_college_layout_v1',
   INITIALIZED: '@sc_local_db_initialized_v2',
 };
 
@@ -998,6 +1036,150 @@ class LocalCampusDBEngine {
    * Resets timetable, calendar of events, attendance, assignments, examination marks, and active quests.
    * PRESERVES: Notes, PYQs (study materials), Clubs, Students, and Faculties!
    */
+  // ==================================================================
+  // Private discussion channels (1-to-1, faculty anchor)
+  // ==================================================================
+  private readonly MAX_PRIVATE_CHANNELS = 50;
+
+  async getPrivateChannels(): Promise<PrivateChannel[]> {
+    return this.getCollection<PrivateChannel>(STORAGE_KEYS.PRIVATE_CHANNELS, []);
+  }
+
+  async setPrivateChannels(items: PrivateChannel[]): Promise<void> {
+    await this.setCollection(STORAGE_KEYS.PRIVATE_CHANNELS, items);
+  }
+
+  async getPrivateMessages(): Promise<PrivateMessage[]> {
+    return this.getCollection<PrivateMessage>(STORAGE_KEYS.PRIVATE_MESSAGES, []);
+  }
+
+  async setPrivateMessages(items: PrivateMessage[]): Promise<void> {
+    await this.setCollection(STORAGE_KEYS.PRIVATE_MESSAGES, items);
+  }
+
+  private privateChannelPairId(a: string, b: string): string {
+    return `pc_${[a, b].sort().join('_')}`;
+  }
+
+  async createPrivateChannel(
+    me: { id: string; name: string; role: 'student' | 'faculty' | 'admin' },
+    other: { id: string; name: string; role: 'student' | 'faculty' | 'admin' }
+  ): Promise<PrivateChannel | null> {
+    if (me.id === other.id) return null;
+
+    const channels = await this.getPrivateChannels();
+    const existing = channels.find(
+      (c) =>
+        c.participantIds.includes(me.id) &&
+        c.participantIds.includes(other.id)
+    );
+    if (existing) return existing;
+
+    if (channels.length >= this.MAX_PRIVATE_CHANNELS) {
+      throw new Error('Private channel limit reached (50). Delete an existing channel first.');
+    }
+
+    const channel: PrivateChannel = {
+      id: this.privateChannelPairId(me.id, other.id),
+      participantIds: [me.id, other.id],
+      participantNames: [me.name, other.name],
+      participantRoles: [me.role, other.role],
+      createdAt: new Date().toISOString(),
+      createdBy: me.id,
+      reported: false,
+    };
+    await this.setPrivateChannels([channel, ...channels]);
+    return channel;
+  }
+
+  async deletePrivateChannel(channelId: string): Promise<void> {
+    const [channels, messages] = await Promise.all([
+      this.getPrivateChannels(),
+      this.getPrivateMessages(),
+    ]);
+    await this.setPrivateChannels(channels.filter((c) => c.id !== channelId));
+    await this.setPrivateMessages(messages.filter((m) => m.channelId !== channelId));
+  }
+
+  async reportPrivateChannel(
+    channelId: string,
+    reporter: { id: string; role: 'student' | 'faculty' | 'admin' }
+  ): Promise<{ deleted: boolean }> {
+    const channels = await this.getPrivateChannels();
+    const channel = channels.find((c) => c.id === channelId);
+    if (!channel) return { deleted: false };
+
+    // Special rule: faculty reporting an admin<->faculty channel deletes it instantly
+    const otherParticipantId = channel.participantIds.find((id) => id !== reporter.id);
+    const otherParticipantRole = channel.participantRoles[
+      channel.participantIds.findIndex((id) => id === otherParticipantId)
+    ];
+    if (reporter.role === 'faculty' && otherParticipantRole === 'admin') {
+      await this.deletePrivateChannel(channelId);
+      return { deleted: true };
+    }
+
+    const next = channels.map((c) =>
+      c.id === channelId
+        ? {
+            ...c,
+            reported: true,
+            reportedBy: reporter.id,
+            reportedByRole: reporter.role,
+            reportedAt: new Date().toISOString(),
+          }
+        : c
+    );
+    await this.setPrivateChannels(next);
+    return { deleted: false };
+  }
+
+  async addPrivateMessage(
+    channelId: string,
+    sender: { id: string; name: string; role: 'student' | 'faculty' | 'admin' },
+    text: string
+  ): Promise<PrivateMessage> {
+    const message: PrivateMessage = {
+      id: `pm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      channelId,
+      senderId: sender.id,
+      senderName: sender.name,
+      senderRole: sender.role,
+      text: text.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    const messages = await this.getPrivateMessages();
+    await this.setPrivateMessages([message, ...messages]);
+    return message;
+  }
+
+  // ==================================================================
+  // College layout (campus map) storage
+  // ==================================================================
+  async getCollegeLayout(): Promise<CollegeLayout | null> {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEYS.COLLEGE_LAYOUT);
+      return raw ? (JSON.parse(raw) as CollegeLayout) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async setCollegeLayout(layout: CollegeLayout): Promise<void> {
+    await AsyncStorage.setItem(STORAGE_KEYS.COLLEGE_LAYOUT, JSON.stringify(layout));
+  }
+
+  async deleteCollegeLayout(): Promise<void> {
+    try {
+      const layout = await this.getCollegeLayout();
+      if (layout?.localUri) {
+        await FileSystem.deleteAsync(layout.localUri, { idempotent: true }).catch(() => {});
+      }
+    } finally {
+      await AsyncStorage.removeItem(STORAGE_KEYS.COLLEGE_LAYOUT);
+    }
+  }
+
   async resetSemester(): Promise<{ clearedCount: number }> {
     await this.init();
 

@@ -31,8 +31,15 @@ import {
   StudentOpportunityRecord,
   EventRegistrationRecord,
   StudentProgressRecord,
+  PrivateChannel,
+  PrivateMessage,
+  CollegeLayout,
 } from '@/services/localDb';
-import { scheduleAcademicPushNotifications } from '@/services/notificationService';
+import {
+  scheduleAcademicPushNotifications,
+  sendAdminPrivateReportNotification,
+  sendPrivateChannelDeletedNotification,
+} from '@/services/notificationService';
 import { normalizeDayName } from '@/utils/lectureUtils';
 import { useAuth } from '@/context/AuthContext';
 
@@ -58,12 +65,28 @@ interface CampusDataContextType {
   students: UserProfile[];
   totalXP: number;
   studentAttendanceMap: Record<string, Record<string, { attended: number; total: number }>>;
+  privateChannels: PrivateChannel[];
+  privateMessages: PrivateMessage[];
+  collegeLayout: CollegeLayout | null;
   getStudentAttendanceRecords: (studentId: string, fallbackToCourse?: boolean) => AttendanceRecord[];
   getStudentExaminationMarks: (studentId: string) => ExaminationMark[];
   getStudentProgress: (studentId?: string) => StudentProgressRecord;
 
   // Actions
   refreshAllData: () => Promise<void>;
+  createPrivateChannel: (otherUser: {
+    id: string;
+    name: string;
+    role: 'student' | 'faculty' | 'admin';
+  }) => Promise<{ ok: boolean; reason?: 'self' | 'limit' | 'error'; channel?: PrivateChannel }>;
+  sendPrivateMessage: (channelId: string, text: string) => Promise<PrivateMessage | null>;
+  deletePrivateChannel: (
+    channelId: string,
+    opts?: { notifyParticipants?: boolean }
+  ) => Promise<void>;
+  reportPrivateChannel: (channelId: string) => Promise<{ deleted: boolean }>;
+  setCollegeLayout: (layout: CollegeLayout) => Promise<void>;
+  deleteCollegeLayout: () => Promise<void>;
   markAttendance: (courseCode: string, isPresent: boolean) => void;
   markStudentAttendance: (studentId: string, courseCode: string, isPresent: boolean) => Promise<void>;
   updateStudentAttendanceRecord: (studentId: string, courseCode: string, attended: number, total: number) => Promise<void>;
@@ -113,6 +136,9 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [faculties, setFaculties] = useState<UserProfile[]>([]);
   const [students, setStudents] = useState<UserProfile[]>([]);
   const [discussions, setDiscussions] = useState<ForumPost[]>(SAMPLE_DISCUSSIONS);
+  const [privateChannels, setPrivateChannels] = useState<PrivateChannel[]>([]);
+  const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
+  const [collegeLayout, setCollegeLayoutState] = useState<CollegeLayout | null>(null);
 
   const refreshAllData = async () => {
     try {
@@ -135,6 +161,9 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         regs,
         prog,
         stds,
+        pvtChannels,
+        pvtMessages,
+        layout,
       ] = await Promise.all([
         LocalCampusDB.getTimetable(),
         LocalCampusDB.getCalendarEvents(),
@@ -153,6 +182,9 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         LocalCampusDB.getEventRegistrations(),
         LocalCampusDB.getStudentProgressRecords(),
         LocalCampusDB.getStudents(),
+        LocalCampusDB.getPrivateChannels(),
+        LocalCampusDB.getPrivateMessages(),
+        LocalCampusDB.getCollegeLayout(),
       ]);
 
       setTimetable(tt);
@@ -172,6 +204,9 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setEventRegistrations(regs || []);
       setStudentProgress(prog || []);
       setStudents(stds || []);
+      setPrivateChannels(pvtChannels || []);
+      setPrivateMessages(pvtMessages || []);
+      setCollegeLayoutState(layout || null);
 
       // Auto-schedule push notifications for internals, externals, assignments
       scheduleAcademicPushNotifications().catch(() => {});
@@ -213,6 +248,7 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           studentName: s.fullName,
           studentRollNo: s.rollNo,
           department: s.department,
+          xp: s.xpPoints ?? rec.xp,
         } as StudentProgressRecord;
       });
     if (user.role === 'student' && !list.some((r) => r.studentId === user.id)) {
@@ -950,6 +986,115 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     scheduleAcademicPushNotifications().catch(() => {});
   };
 
+  const createPrivateChannel = async (otherUser: {
+    id: string;
+    name: string;
+    role: 'student' | 'faculty' | 'admin';
+  }): Promise<{
+    ok: boolean;
+    reason?: 'self' | 'limit' | 'error';
+    channel?: PrivateChannel;
+  }> => {
+    if (!otherUser?.id) return { ok: false, reason: 'error' };
+    if (otherUser.id === user.id) return { ok: false, reason: 'self' };
+
+    try {
+      const channel = await LocalCampusDB.createPrivateChannel(
+        { id: user.id, name: user.fullName, role: user.role as 'student' | 'faculty' | 'admin' },
+        otherUser
+      );
+      if (!channel) return { ok: false, reason: 'self' };
+      setPrivateChannels((prev) =>
+        prev.some((c) => c.id === channel.id) ? prev : [channel, ...prev]
+      );
+      return { ok: true, channel };
+    } catch (err: any) {
+      const msg = String(err?.message || err || '');
+      return { ok: false, reason: msg.toLowerCase().includes('limit') ? 'limit' : 'error' };
+    }
+  };
+
+  const sendPrivateMessage = async (
+    channelId: string,
+    text: string
+  ): Promise<PrivateMessage | null> => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    try {
+      const message = await LocalCampusDB.addPrivateMessage(
+        channelId,
+        { id: user.id, name: user.fullName, role: user.role as 'student' | 'faculty' | 'admin' },
+        trimmed
+      );
+      setPrivateMessages((prev) => [message, ...prev]);
+      return message;
+    } catch (err) {
+      console.warn('[CampusDataContext] Error sending private message:', err);
+      return null;
+    }
+  };
+
+  const deletePrivateChannel = async (
+    channelId: string,
+    opts?: { notifyParticipants?: boolean }
+  ): Promise<void> => {
+    const channel = privateChannels.find((c) => c.id === channelId);
+    await LocalCampusDB.deletePrivateChannel(channelId);
+    setPrivateChannels((prev) => prev.filter((c) => c.id !== channelId));
+    setPrivateMessages((prev) => prev.filter((m) => m.channelId !== channelId));
+
+    if (opts?.notifyParticipants) {
+      const otherName = channel?.participantNames?.find((n) => n !== user.fullName);
+      sendPrivateChannelDeletedNotification(otherName).catch(() => {});
+    }
+  };
+
+  const reportPrivateChannel = async (
+    channelId: string
+  ): Promise<{ deleted: boolean }> => {
+    const result = await LocalCampusDB.reportPrivateChannel(channelId, {
+      id: user.id,
+      role: user.role as 'student' | 'faculty' | 'admin',
+    });
+
+    if (result.deleted) {
+      setPrivateChannels((prev) => prev.filter((c) => c.id !== channelId));
+      setPrivateMessages((prev) => prev.filter((m) => m.channelId !== channelId));
+      return { deleted: true };
+    }
+
+    setPrivateChannels((prev) =>
+      prev.map((c) =>
+        c.id === channelId
+          ? {
+              ...c,
+              reported: true,
+              reportedBy: user.id,
+              reportedByRole: user.role as 'student' | 'faculty' | 'admin',
+              reportedAt: new Date().toISOString(),
+            }
+          : c
+      )
+    );
+
+    const channel = privateChannels.find((c) => c.id === channelId);
+    const otherName =
+      channel?.participantNames?.find((n) => n !== user.fullName) || 'a private channel';
+    sendAdminPrivateReportNotification(user.fullName, otherName).catch(() => {});
+    return { deleted: false };
+  };
+
+  const setCollegeLayout = async (layout: CollegeLayout): Promise<void> => {
+    await LocalCampusDB.setCollegeLayout(layout);
+    setCollegeLayoutState(layout);
+  };
+
+  const deleteCollegeLayout = async (): Promise<void> => {
+    await LocalCampusDB.deleteCollegeLayout();
+    setCollegeLayoutState(null);
+  };
+
   const updateCalendarEvents = async (eventsList: CalendarEventItem[]) => {
     setCalendarEvents(eventsList);
     await LocalCampusDB.setCalendarEvents(eventsList);
@@ -1006,6 +1151,15 @@ export const CampusDataProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         updateSubjectDetails,
         deleteSubject,
         updateCalendarEvents,
+        privateChannels,
+        privateMessages,
+        collegeLayout,
+        createPrivateChannel,
+        sendPrivateMessage,
+        deletePrivateChannel,
+        reportPrivateChannel,
+        setCollegeLayout,
+        deleteCollegeLayout,
       }}
     >
       {children}

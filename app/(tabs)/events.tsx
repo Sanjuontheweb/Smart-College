@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { ClubItem, StudentOpportunityRecord } from '@/services/localDb';
 import { CampusEvent } from '@/constants/CampusData';
+import { getEventsColor } from '@/utils/subjectColors';
 
 type EventSegment = 'events' | 'opportunities' | 'clubs';
 type OppStatus = 'applied' | 'accepted' | 'rejected';
@@ -309,15 +310,18 @@ export default function EventsScreen() {
               <Badge label="Verified by Student Council" variant="success" />
             </View>
 
-            {events.map((evt) => {
+            {events.map((evt, index) => {
               const myReg = getMyRegistration(evt.id);
               const registrations = getEventRegistrations(evt.id);
+              const eventColor = getEventsColor(index, colors, isDark);
               return (
                 <Card
                   key={evt.id}
                   style={{
-                    backgroundColor: colors.card,
-                    borderColor: colors.cardBorder,
+                    backgroundColor: eventColor.bg,
+                    borderColor: eventColor.border,
+                    borderLeftWidth: 4,
+                    borderLeftColor: eventColor.accent,
                     marginBottom: 14,
                   }}
                 >
@@ -452,8 +456,9 @@ export default function EventsScreen() {
               </View>
             )}
 
-            {opportunities.map((opp) => {
+            {opportunities.map((opp, index) => {
               const myRecord = getMyRecord(opp.id);
+              const oppColor = getEventsColor(index, colors, isDark);
               const applicants = studentOpportunities.filter((r) => r.oppId === opp.id);
               const appliedCount = applicants.length;
               const deadlineOver = isDeadlineOver(opp.deadline);
@@ -475,8 +480,10 @@ export default function EventsScreen() {
                 <Card
                   key={opp.id}
                   style={{
-                    backgroundColor: colors.card,
-                    borderColor: colors.cardBorder,
+                    backgroundColor: oppColor.bg,
+                    borderColor: oppColor.border,
+                    borderLeftWidth: 4,
+                    borderLeftColor: oppColor.accent,
                     marginBottom: 14,
                   }}
                 >
@@ -648,14 +655,17 @@ export default function EventsScreen() {
               <Badge label="Active Chapters" variant="info" />
             </View>
 
-            {clubs.map((club) => {
+            {clubs.map((club, index) => {
               const joined = role === 'admin' ? true : isClubMember(club);
+              const clubColor = getEventsColor(index, colors, isDark);
               return (
                 <Card
                   key={club.id}
                   style={{
-                    backgroundColor: colors.card,
-                    borderColor: colors.cardBorder,
+                    backgroundColor: clubColor.bg,
+                    borderColor: clubColor.border,
+                    borderLeftWidth: 4,
+                    borderLeftColor: clubColor.accent,
                     marginBottom: 14,
                   }}
                 >

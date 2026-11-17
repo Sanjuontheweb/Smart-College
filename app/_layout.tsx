@@ -99,6 +99,7 @@ function RootLayoutNav() {
           <Stack.Screen name="screens/academics" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
           <Stack.Screen name="screens/assistant" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
           <Stack.Screen name="screens/portal" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
+          <Stack.Screen name="screens/private-chat" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
           <Stack.Screen name="screens/roles" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
           <Stack.Screen
             name="modal"

@@ -1010,6 +1010,137 @@ JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
 }
 
 /**
+ * Campus layout verification: accepts only a top-view college aerial photo
+ * or a campus layout/map photo (image or PDF). Returns a summary + doubts.
+ */
+export async function analyzeCollegeLayoutDocument(
+  fileUri: string,
+  mimeType: string
+): Promise<{
+  summary: string;
+  doubts: string[];
+}> {
+  const token = await getGroqToken();
+  if (!token) {
+    throw new Error(
+      'Groq API key required for AI document analysis. Please save your free Groq key (gsk_...) in the AI Assistant tab first.'
+    );
+  }
+
+  let base64Data = '';
+  let extractedPdfText = '';
+  const isPdf = mimeType.includes('pdf') || fileUri.toLowerCase().endsWith('.pdf');
+
+  try {
+    base64Data = await readFileAsBase64Safe(fileUri);
+    if (isPdf) {
+      try {
+        const rawContent = await FileSystem.readAsStringAsync(fileUri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        extractedPdfText = extractTextFromPdfContent(rawContent, base64Data);
+      } catch {
+        extractedPdfText = extractTextFromPdfContent('', base64Data);
+      }
+    }
+  } catch (e: any) {
+    console.warn('[AI] Error reading layout file:', e);
+    throw new Error('Unable to read the uploaded layout. Please upload a clear top-view college photo or layout map.');
+  }
+
+  const promptText = `You are a campus map verifier.
+TASK:
+1. Decide whether the uploaded document is a LEGITIMATE top-view aerial view of a college campus OR a legitimate campus layout / map (image or PDF).
+2. If it is NOT either of those (e.g. selfie, classroom photo, random document, timetable, notes), set "isLegitimate": false and explain in "rejectionReason".
+3. If it IS a campus layout, set "isLegitimate": true, describe what is visible (blocks, roads, courts, hostel, landmarks), and list any legibility doubts.
+
+JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
+{
+  "isLegitimate": boolean,
+  "rejectionReason": "string (only if isLegitimate is false)",
+  "summary": "string describing the layout and visible landmarks",
+  "doubts": ["string question about unreadable labels or unclear areas"]
+}`;
+
+  let messages: any[] = [];
+  let modelToUse = 'qwen/qwen3.8-27b';
+
+  if (!isPdf && base64Data) {
+    const imgMime = mimeType.includes('png') ? 'image/png' : 'image/jpeg';
+    messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: promptText },
+          {
+            type: 'image_url',
+            image_url: { url: `data:${imgMime};base64,${base64Data}` },
+          },
+        ],
+      },
+    ];
+  } else {
+    modelToUse = 'openai/gpt-oss-120b';
+    messages = [
+      {
+        role: 'user',
+        content: `${promptText}\n\nDocument Text / Content Extracted:\n"""\n${
+          extractedPdfText || base64Data.slice(0, 4000)
+        }\n"""`,
+      },
+    ];
+  }
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      model: modelToUse,
+      messages,
+      response_format: { type: 'json_object' },
+      max_tokens: 1500,
+      temperature: 0.1,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => null);
+    const msg = errBody?.error?.message || `HTTP ${response.status}`;
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Invalid Groq API key. Please check your key in Assistant tab.');
+    }
+    if (response.status === 429) {
+      throw new Error('Groq rate limit reached. Please wait a moment before analyzing again.');
+    }
+    throw new Error(`AI Analysis Failed (${msg})`);
+  }
+
+  const resJson = await response.json();
+  const rawContent = resJson.choices?.[0]?.message?.content || '{}';
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    throw new Error('AI returned an invalid response format. Please try analyzing again.');
+  }
+
+  if (parsed.isLegitimate === false) {
+    throw new Error(
+      parsed.rejectionReason ||
+        'The uploaded file does not look like a top-view college photo or a campus layout map. Please upload the correct map.'
+    );
+  }
+
+  return {
+    summary: parsed.summary || 'College layout verified.',
+    doubts: Array.isArray(parsed.doubts) ? parsed.doubts : [],
+  };
+}
+
+/**
  * Refine / Re-analyze Document with User Clarifications & Additional Notes
  */
 export async function refineDocumentAnalysis(params: {
