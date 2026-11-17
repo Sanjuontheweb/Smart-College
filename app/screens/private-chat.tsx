@@ -183,7 +183,7 @@ export default function PrivateChatScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
+      <View style={styles.screen}>
         <Header subtitle="Private Channel" showBackButton />
 
         {/* Channel header */}
@@ -306,7 +306,7 @@ export default function PrivateChatScreen() {
               {
                 backgroundColor: colors.card,
                 borderTopColor: colors.border,
-                paddingBottom: isKeyboardVisible ? 10 : Math.max(insets.bottom, 12),
+                paddingBottom: isKeyboardVisible ? 11 : Math.max(insets.bottom, 12),
               },
             ]}
           >
@@ -455,7 +455,7 @@ const styles = StyleSheet.create({
   composer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 10,
     borderTopWidth: 1,

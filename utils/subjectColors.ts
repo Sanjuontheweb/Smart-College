@@ -8,25 +8,27 @@ export interface SubjectColor {
   accent: string;
 }
 
-const BASE_TOKENS: (keyof ThemeColors)[] = [
-  'accent',
-  'info',
-  'success',
-  'warning',
-  'primary',
-  'roleStudent',
-  'roleFaculty',
-  'danger',
-  'roleAdmin',
-  'successLight',
-  'warningLight',
-  'dangerLight',
-  'infoLight',
+// Full-strength, equally-bright brand hues (same perceived brightness)
+const SATURATED = [
+  '#4F46E5', // indigo
+  '#7C3AED', // violet
+  '#2563EB', // blue
+  '#0EA5E9', // sky
+  '#0891B2', // cyan
+  '#0D9488', // teal
+  '#059669', // emerald
+  '#65A30D', // lime
+  '#F59E0B', // amber
+  '#F97316', // orange
+  '#EF4444', // red
+  '#EC4899', // pink
+  '#A855F7', // purple
 ];
 
 /**
  * Deterministic low-tint palette for subject coding.
  * Same course code -> same color in every Academics segment, on both themes.
+ * Hues are full-strength with equal perceived brightness.
  */
 export function getSubjectColor(
   courseCode: string | undefined,
@@ -38,11 +40,10 @@ export function getSubjectColor(
   for (let i = 0; i < code.length; i++) {
     hash = (hash * 31 + code.charCodeAt(i)) >>> 0;
   }
-  const token = BASE_TOKENS[hash % BASE_TOKENS.length];
-  const base = colors[token] as string;
+  const base = SATURATED[hash % SATURATED.length];
   return {
-    bg: `${base}${isDark ? '1F' : '14'}`,
-    border: `${base}${isDark ? '66' : '55'}`,
+    bg: `${base}${isDark ? '26' : '1A'}`,
+    border: `${base}${isDark ? '70' : '60'}`,
     accent: base,
   };
 }
@@ -56,11 +57,11 @@ export function getEventsColor(
   colors: ThemeColors,
   isDark: boolean
 ): SubjectColor {
-  const token = BASE_TOKENS[((index % BASE_TOKENS.length) + BASE_TOKENS.length) % BASE_TOKENS.length];
-  const base = colors[token] as string;
+  const base =
+    SATURATED[((index % SATURATED.length) + SATURATED.length) % SATURATED.length];
   return {
-    bg: `${base}${isDark ? '1F' : '14'}`,
-    border: `${base}${isDark ? '66' : '55'}`,
+    bg: `${base}${isDark ? '26' : '1A'}`,
+    border: `${base}${isDark ? '70' : '60'}`,
     accent: base,
   };
 }

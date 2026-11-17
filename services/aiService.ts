@@ -465,8 +465,13 @@ export async function askSmartCampusAI(params: {
 /**
  * Helper to decompress and extract readable text from PDF streams (including FlateDecode streams like WhatsApp / Canva CVs)
  */
-function extractTextFromPdfContent(rawContent: string, base64Buffer?: string): string {
+function extractTextFromPdfContent(
+  rawContent: string,
+  base64Buffer?: string,
+  preserveLines = false
+): string {
   let combinedText = '';
+  const runSep = preserveLines ? '\n' : ' ';
 
   // 1. Try decompressing internal FlateDecode streams using pako if binary/base64 is present
   try {
@@ -531,7 +536,7 @@ function extractTextFromPdfContent(rawContent: string, base64Buffer?: string): s
             for (const item of tjMatches) {
               const parts = item.match(/\((.*?)\)/g);
               if (parts) {
-                combinedText += parts.map((p) => p.slice(1, -1)).join('') + ' ';
+                combinedText += parts.map((p) => p.slice(1, -1)).join('') + runSep;
               }
             }
           }
@@ -541,7 +546,7 @@ function extractTextFromPdfContent(rawContent: string, base64Buffer?: string): s
           if (simpleTj) {
             for (const item of simpleTj) {
               const p = item.match(/\((.*?)\)/);
-              if (p && p[1]) combinedText += p[1] + ' ';
+              if (p && p[1]) combinedText += p[1] + runSep;
             }
           }
 
@@ -553,7 +558,7 @@ function extractTextFromPdfContent(rawContent: string, base64Buffer?: string): s
                 .map((s) => s.slice(1, -1))
                 .filter((s) => !['en-US', 'Calibri-Bold', 'Calibri', 'Arial', 'TimesNewRoman'].includes(s));
               if (streamWords.length > 0) {
-                combinedText += streamWords.join(' ') + ' ';
+                combinedText += streamWords.join(runSep) + runSep;
               }
             }
           }
@@ -569,7 +574,13 @@ function extractTextFromPdfContent(rawContent: string, base64Buffer?: string): s
   }
 
   if (combinedText.trim().length > 50) {
-    return combinedText.replace(/\s+/g, ' ').trim();
+    return preserveLines
+      ? combinedText
+          .split('\n')
+          .map((line) => line.replace(/\s+/g, ' ').trim())
+          .filter(Boolean)
+          .join('\n')
+      : combinedText.replace(/\s+/g, ' ').trim();
   }
 
   // 2. Standard PDF Tj / TJ extraction on raw content
@@ -590,7 +601,9 @@ function extractTextFromPdfContent(rawContent: string, base64Buffer?: string): s
     }
   }
 
-  return textMatches.join(' ').replace(/\\[nrtbf\\]/g, ' ').trim();
+  return preserveLines
+    ? textMatches.map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n')
+    : textMatches.join(' ').replace(/\\[nrtbf\\]/g, ' ').trim();
 }
 
 /**
@@ -644,6 +657,37 @@ async function readFileAsBase64Safe(uri: string): Promise<string> {
  * to verify if the uploaded document is a legitimate academic timetable,
  * extract actual lecture/lab slots, and generate realistic doubts.
  */
+/**
+ * Recovers class slots from a JSON response that got cut off mid-way
+ * (token limit). Keeps every fully-closed slot object.
+ */
+function salvageTimetableJson(raw: string): any | null {
+  const start = raw.indexOf('{');
+  if (start === -1) return null;
+  const body = raw.slice(start);
+  const classesIdx = body.indexOf('"classes"');
+  const segment = classesIdx === -1 ? body : body.slice(classesIdx);
+  const objRegex = /\{[^{}]*\}/g;
+  const slotObjects: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = objRegex.exec(segment)) !== null) {
+    if (match[0].includes('"courseCode"') && match[0].includes('"day"')) {
+      slotObjects.push(match[0]);
+    }
+  }
+  if (slotObjects.length === 0) return null;
+  try {
+    return {
+      isLegitimate: true,
+      summary: 'Recovered timetable slots from a truncated AI response.',
+      doubts: ['The AI response was cut short, so the last slots may be missing. Review the preview.'],
+      classes: JSON.parse(`[${slotObjects.join(',')}]`),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function analyzeTimetableDocument(
   fileUri: string,
   mimeType: string
@@ -670,9 +714,9 @@ export async function analyzeTimetableDocument(
         const rawContent = await FileSystem.readAsStringAsync(fileUri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
-        extractedPdfText = extractTextFromPdfContent(rawContent, base64Data);
+        extractedPdfText = extractTextFromPdfContent(rawContent, base64Data, true);
       } catch {
-        extractedPdfText = extractTextFromPdfContent('', base64Data);
+        extractedPdfText = extractTextFromPdfContent('', base64Data, true);
       }
     }
   } catch (e: any) {
@@ -680,40 +724,102 @@ export async function analyzeTimetableDocument(
     throw new Error('Unable to read the uploaded document file. Please upload a clear image or PDF.');
   }
 
-  const promptText = `You are an expert college academic schedule analyzer.
-TASK:
-1. Examine this uploaded document (which claims to be a College Timetable).
-2. Determine if it is a LEGITIMATE college / university timetable (showing days, times, courses/subjects, rooms, or faculty).
-3. If it is NOT a legitimate timetable, set "isLegitimate": false and explain in "rejectionReason".
-4. If it IS a legitimate timetable, set "isLegitimate": true, and EXTRACT EVERY SINGLE SCHEDULE SLOT across ALL days (Monday, Tuesday, Wednesday, Thursday, Friday, and Saturday if present).
+  if (isPdf && extractedPdfText.replace(/\s/g, '').length < 120) {
+    throw new Error(
+      'This PDF has no selectable text (it looks like a scanned/flattened image), so the timetable grid cannot be read reliably. Please upload a screenshot or photo of the timetable instead (PNG/JPG).'
+    );
+  }
 
-CRITICAL EXTRACTION & OCR REFINEMENT RULES:
-- BREAKS / RECESS HANDLING: Columns or rows indicating Tea Break (e.g. 10:45 - 11:00 AM), Short Break, Lunch Break (e.g. 13:00 - 13:45 / 1:00 - 1:45 PM), or Recess are NOT teaching subjects. Do NOT create classes for them. Instead, use them to accurately determine the exact start and end times of the periods before and after them (e.g. Period 2 ends at 10:45 AM, Period 3 starts at 11:00 AM; Period 4 ends at 1:00 PM, Period 5 starts at 1:45 PM)!
-- FULL DAY COVERAGE & END-OF-DAY PERIODS: DO NOT STOP early! College timetables frequently run all 7 periods until late afternoon (e.g. Period 5: 01:45-02:45 PM, Period 6: 02:45-03:45 PM, Period 7: 03:45-04:45 PM). You MUST scan every column from the first morning period to the very last evening period across all days (Monday through Saturday).
-- DUAL / MULTI-FACULTY MAPPING: Look at the Staff In-Charge / Course Details reference table at the bottom of the document to map faculty initials or abbreviations (e.g. VSR -> Ms. VAISHNAVI R, RKP -> Mrs. RAKSHITHA P, MRC -> Dr. MYLARA REDDY C, PPK -> Mr. PAVAN P KASHYAP, KNS -> Dr. KRISHNA NARAYANAN S). When a subject or lab is conducted jointly by multiple professors (e.g. "PPK / KNS" or "PPK/KNS"), record the combined full names cleanly (e.g. "Mr. PAVAN P KASHYAP / Dr. KRISHNA NARAYANAN S") on that single slot. Do NOT split it into two conflicting courses or treat them as an unknown faculty.
-- SUBJECT CODES & NAMES: Cross-reference the subject codes table (e.g. BCS501: Software Engineering & Project Management, BCS502: Computer Networks, BCS503: Theory Of Computation, BCYL504: Applied Cryptography & Security Lab, BCY515C: Human Touch Interfaces, BCY586: Mini Project, BRMK557: Research Methodology, BCS508: Environmental Studies, BNSK559: NSS, ENG: English) to provide both full course code and full descriptive course title.
-- LABS & PRACTICALS: If a lab slot spans multiple periods (e.g. Periods 5 to 7 or 13:45 to 16:45) or divides into batches (e.g. B1 - CNL / B2 - ACSL), record the start time, end time, and mark type as "Lab".
-- COMPLETE DAYS: Examine every day row (Monday, Tuesday, Wednesday, Thursday, Friday, and Saturday) completely from left to right. Ensure course codes, subject titles, start/end times, and rooms are filled accurately.
+  const promptText = `You are an expert college TIMETABLE GRID analyst (OCR + table reconstruction).
+GOAL: rebuild the uploaded timetable exactly as structured data, cell by cell.
+Work through the pipeline below IN ORDER. Fill the "structure" block from the analysis BEFORE writing any class. Return JSON only, no commentary.
 
-JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
+STEP 0 - VALIDITY GATE
+Decide whether this is a real college/university timetable: an academic header (college, branch, semester/section) plus a grid of days vs periods holding subject codes/titles, rooms or faculty.
+If it is NOT (marks card, fee receipt, resume, circular, poster, single subject list), set "isLegitimate": false and give "rejectionReason". Never fabricate a timetable.
+
+STEP 1 - HEADER / TITLE BLOCK (read this before the grid)
+Capture what is printed above the grid: institution, department/branch, semester, section/class, room/hall, academic year, and any "with effect from" date. Put it in "structure.header" and reuse it in "summary".
+
+STEP 2 - FIND THE GRID AREA
+Identify the table region that actually contains day labels and time/period labels. Ignore logos, instructions, footers, and the subject/staff reference tables at the bottom (those are legends, not slots). Record the region in "structure.gridRegion".
+
+STEP 3 - AXIS DETECTION (most important)
+Determine on which axis the DAYS run:
+- vertical: Monday..Saturday run down the left (or right) side, and time advances left-to-right along each row.
+- horizontal: days run across the top (or bottom), and time advances top-to-bottom down each column.
+Set "structure.daysAxis" and "structure.timeAxis" to the opposite axis.
+Days may be full words, abbreviations (MON, TUE/TUES, WED, THU/THUR/THURS, FRI, SAT, SUN) or single letters (M T W Th F S) or 1-6. Disambiguate by ORDER, never by a single ambiguous letter: the day after Tuesday is Wednesday, Thursday comes after Wednesday, Saturday is the last working day. Never map T to both Tuesday and Thursday for different rows/columns.
+If days are vertical, the classes held on a day are that ROW. If days are horizontal, the classes held on a day are that COLUMN. Clock times are always on the perpendicular axis.
+
+STEP 4 - PERIOD & BREAK TIMING GRID
+1) List every period slot in order with its label (P1, I, 1st hour, etc.) and printed clock time.
+2) Locate the FIXED BREAKS: assembly/prayer, tea/short break, lunch/recess. Breaks are the same for every day, they are NOT classes, and they are NOT empty periods.
+3) Use the breaks as boundaries: the period before a break ends exactly when the break starts; the period after a break starts exactly when the break ends. Example: period 2 ends 10:45 AM, tea break 10:45-11:00 AM, period 3 starts 11:00 AM; period 4 ends 01:00 PM, lunch 01:00-01:45 PM, period 5 starts 01:45 PM.
+4) Derive start/end for EVERY period, including the periods after lunch and the last period of the day. If only the first period time and the period duration are printed, derive the rest while preserving break gaps.
+Put the result in "structure.periods" and "structure.breaks".
+
+STEP 5 - CLASS COUNT PER DAY
+Count the teaching periods per day. The number is normally identical for every day (a lab spanning 2-3 consecutive periods is still ONE cell = one class). Set "structure.classesPerDay". If one day genuinely differs, keep the real counts and mention it in doubts.
+
+STEP 6 - ENUMERATE EVERY CELL
+Walk each day in time order and emit exactly one class per filled cell:
+- A cell spanning several consecutive periods (lab/practical/workshop) is ONE class from the first period's start to the last period's end, type "Lab".
+- A cell splitting batches (e.g. "B1 - CNL / B2 - ACSL") is still one slot for that day; mildly combine the batch content in the title and mark type "Lab".
+- Blank cell = free period: emit nothing (only note it in doubts if an entire day is empty).
+- Never merge two different subjects into one slot, never duplicate a cell, never emit the same cell twice for two days.
+- Do not stop early: read the LAST period of every day (timetables often run until 04:45 PM).
+
+STEP 7 - SUBJECT DICTIONARY
+Collect every subject code/title used in the grid and read the course legend. Resolve abbreviations and short forms to the full title (SE = Software Engineering). Use the SAME code and title on every slot of that subject. Keep codes upper-case without spaces. Record the dictionary in "courses".
+
+STEP 8 - FACULTY DICTIONARY & MAPPING
+Read the staff/faculty legend and expand initials to full names (VSR -> Ms. Vaishnavi R, RKP -> Mrs. Rakshitha P).
+IMPORTANT: a subject may be handled jointly by two or more faculty. The cell or legend then shows two names/initials, e.g. "PPK / KNS", "Mr. X & Dr. Y", "PPK,KNS". In that case the subject is assigned to ALL those faculty and you must keep them together, joined by " / ", on that single slot (e.g. "Mr. Pavan P Kashyap / Dr. Krishna Narayanan S"). Do NOT split it into two subjects, do NOT pick only the first name, do NOT mark it unknown.
+Also handle: one faculty teaching several subjects, and the same subject taught by different faculty in different slots - always follow the legend/printed cell, never guess.
+
+STEP 9 - ASSEMBLE AND PUZZLE-CHECK
+- Every class needs: day, startTime, endTime, courseCode, courseTitle, facultyName, room, type.
+- Times must be "hh:mm AM/PM" (e.g. "09:00 AM") and must match the correct period from Step 4.
+- No two classes on the same day may overlap.
+- No class before period 1 or after the last period.
+- If a cell's time is unreadable but the subject is clear, place it using the period grid position instead of guessing a time.
+- Cross-check the totals: slots found should equal days x classesPerDay (minus free periods). If your count is off, re-read the grid before answering.
+
+STEP 10 - DOUBTS
+Ask at most 5 genuinely unclear things (overlapping slots, unreadable break duration, alternate Saturdays, elective/batch split). No generic filler.
+
+PRIORITY ORDER: (1) correct period/break timing alignment, (2) correct day axis and cell placement, (3) correct subject<->faculty mapping including multi-faculty subjects. Never invent subjects, never drop a whole day, never output a partial week.
+
+JSON SCHEMA (return strictly this object):
 {
   "isLegitimate": boolean,
-  "rejectionReason": "string (only if isLegitimate is false)",
-  "summary": "string summarizing the timetable (branch, semester, number of courses)",
-  "doubts": [
-    "string question about any ambiguity found (e.g. overlapping slots, alternate Saturdays, elective batch divisions)"
+  "rejectionReason": "string (only when isLegitimate is false)",
+  "summary": "branch, semester, section, periods per day, number of subjects",
+  "structure": {
+    "header": "string",
+    "gridRegion": "string",
+    "daysAxis": "vertical" | "horizontal",
+    "timeAxis": "vertical" | "horizontal",
+    "classesPerDay": number,
+    "periods": [{ "label": "P1", "startTime": "09:00 AM", "endTime": "09:55 AM" }],
+    "breaks": [{ "label": "Tea Break", "startTime": "10:45 AM", "endTime": "11:00 AM" }]
+  },
+  "courses": [
+    { "courseCode": "BCS501", "courseTitle": "Software Engineering & Project Management", "facultyNames": ["Ms. Vaishnavi R"] }
   ],
+  "doubts": ["string"],
   "classes": [
     {
       "id": "tt_1",
       "courseCode": "BCS503",
       "courseTitle": "Theory Of Computation",
-      "day": "Monday", // Must be one of: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
-      "startTime": "09:00 AM", // e.g. 09:00 AM
-      "endTime": "10:00 AM", // e.g. 10:00 AM
+      "day": "Monday",
+      "startTime": "09:00 AM",
+      "endTime": "10:00 AM",
       "room": "LH-301",
-      "facultyName": "Faculty Name",
-      "type": "Theory" // Theory, Lab, or Tutorial
+      "facultyName": "Faculty Name / Second Faculty Name",
+      "type": "Theory"
     }
   ]
 }`;
@@ -742,9 +848,7 @@ JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
     messages = [
       {
         role: 'user',
-        content: `${promptText}\n\nDocument Text Content Extracted from PDF:\n"""\n${
-          extractedPdfText || base64Data.slice(0, 4000)
-        }\n"""`,
+        content: `${promptText}\n\nRaw grid text extracted from the PDF. Each line break separates a text run / table cell, so use the ordering and grouping to rebuild rows and columns:\n"""\n${extractedPdfText.slice(0, 12000)}\n"""`,
       },
     ];
   }
@@ -759,7 +863,8 @@ JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
       model: modelToUse,
       messages,
       response_format: { type: 'json_object' },
-      max_tokens: 5000,
+      // Full weeks (6 days x 7-8 periods) plus the structure/courses blocks need headroom
+      max_tokens: 7000,
       temperature: 0.1,
     }),
   });
@@ -778,10 +883,13 @@ JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
 
   const resJson = await response.json();
   const rawContent = resJson.choices?.[0]?.message?.content || '{}';
-  let parsed: any;
+  let parsed: any = null;
   try {
     parsed = JSON.parse(rawContent);
   } catch {
+    parsed = salvageTimetableJson(rawContent);
+  }
+  if (!parsed) {
     throw new Error('AI returned an invalid response format. Please try analyzing again.');
   }
 
@@ -793,19 +901,26 @@ JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
   }
 
   const validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const formattedClasses = Array.isArray(parsed.classes)
-    ? parsed.classes.map((cls: any, i: number) => ({
-        id: `tt_${Date.now()}_${i + 1}`,
-        courseCode: cls.courseCode || 'ACAD101',
-        courseTitle: cls.courseTitle || 'Academic Subject',
-        day: validDays.includes(cls.day) ? cls.day : validDays[i % 5],
-        startTime: cls.startTime || '09:00 AM',
-        endTime: cls.endTime || '10:00 AM',
-        room: cls.room || 'LH-301',
-        facultyName: cls.facultyName || 'Department Faculty',
-        type: cls.type === 'Lab' || cls.type === 'Tutorial' ? cls.type : 'Theory',
-      }))
-    : [];
+  const seenSlots = new Set<string>();
+  const formattedClasses = (Array.isArray(parsed.classes) ? parsed.classes : [])
+    .map((cls: any, i: number) => ({
+      id: `tt_${Date.now()}_${i + 1}`,
+      courseCode: (cls.courseCode || 'ACAD101').trim().toUpperCase(),
+      courseTitle: cls.courseTitle || 'Academic Subject',
+      day: validDays.includes(cls.day) ? cls.day : null,
+      startTime: cls.startTime || '09:00 AM',
+      endTime: cls.endTime || '10:00 AM',
+      room: cls.room || 'LH-301',
+      facultyName: cls.facultyName || 'Department Faculty',
+      type: cls.type === 'Lab' || cls.type === 'Tutorial' ? cls.type : 'Theory',
+    }))
+    .filter((cls: any) => {
+      if (!cls.day) return false;
+      const key = `${cls.day}|${cls.startTime}|${cls.courseCode}`;
+      if (seenSlots.has(key)) return false;
+      seenSlots.add(key);
+      return true;
+    });
 
   if (formattedClasses.length === 0) {
     throw new Error(
@@ -813,9 +928,21 @@ JSON SCHEMA REQUIREMENT (Return strictly a JSON object):
     );
   }
 
+  const doubts: string[] = Array.isArray(parsed.doubts) ? parsed.doubts : [];
+  const expectedPerDay = Number(parsed.structure?.classesPerDay);
+  const daysCovered = new Set(formattedClasses.map((c: any) => c.day));
+  if (expectedPerDay > 0 && daysCovered.size > 0) {
+    const avg = formattedClasses.length / daysCovered.size;
+    if (avg < expectedPerDay * 0.6) {
+      doubts.push(
+        `Only ${formattedClasses.length} slots were recovered across ${daysCovered.size} days (expected about ${expectedPerDay} per day). Check the preview and add anything missing.`
+      );
+    }
+  }
+
   return {
     classes: formattedClasses,
-    doubts: Array.isArray(parsed.doubts) ? parsed.doubts : [],
+    doubts,
     summary: parsed.summary || `Extracted ${formattedClasses.length} class slots from uploaded timetable.`,
   };
 }
@@ -1166,9 +1293,54 @@ export async function refineDocumentAnalysis(params: {
     .map(([idx, ans]) => `Q: ${params.currentDoubts[Number(idx)] || 'Question ' + idx}\nUser Answer: ${ans}`)
     .join('\n\n');
 
-  const promptText = `You are an expert college academic data refinement assistant.
+  // Compact, stable handles (s1..sN) so the model never has to copy long ids
+  const baseItems: any[] = Array.isArray(params.currentItems) ? params.currentItems : [];
+  const modelSlots = baseItems.map((slot, i) => ({ ...slot, id: `s${i + 1}` }));
+  const hadGuidance =
+    clarificationLines.trim().length > 0 || Boolean((params.additionalNotes || '').trim());
+
+  const promptText =
+    params.type === 'timetable'
+      ? `You are a SURGICAL timetable patch editor.
+Input: an already-extracted college timetable (authoritative) plus the user's clarifications.
+Output: a MINIMAL patch. Never rewrite or re-extract the timetable.
+
+CURRENT TIMETABLE SLOTS - use these short ids (s1, s2, ...) to point at classes:
+${JSON.stringify(modelSlots, null, 2)}
+
+USER ANSWERS TO PREVIOUS DOUBTS:
+${clarificationLines || 'None provided.'}
+
+USER'S ADDITIONAL NOTES / MISSED ITEMS:
+${params.additionalNotes || 'None provided.'}
+
+HARD RULES:
+1. Touch ONLY the slots the user actually talked about. Do NOT re-emit untouched slots, do not reformat them, do not reorder, do not "fix" their spelling, faculty, room or times.
+2. You are editing a list of slots, not re-reading the timetable grid. Never rebuild the whole week from scratch.
+3. Refer to slots ONLY by the short ids above (s1, s2, ...). Never invent, renumber or truncate them.
+4. In "updates" include ONLY the fields that change. Omitted fields keep their existing value.
+5. Apply what the user asks. If they name a day/period/time/subject/faculty, find the matching slot(s) and emit the update(s). A clarification that is actionable must produce at least one patch entry - do not stay silent.
+6. A missing class the user mentions goes to "additions" with all fields filled.
+7. A rule that affects many slots (e.g. "Saturday has 4 periods only", "lunch is 12:30-1:15 PM", "all labs are 2 hours", "remove the last period everywhere") becomes one update/removal per affected slot - still leave every other slot untouched.
+8. Never remove a slot unless the user explicitly says it does not exist.
+9. Keep the original analysis conventions: full day names (Monday..Sunday), times "hh:mm AM/PM", one courseCode/courseTitle per subject, jointly handled subjects keep ALL faculty joined with " / ", type is Theory / Lab / Tutorial.
+10. Only truly ambiguous notes become questions in "doubts" (no patch for that item). Do not ask about things you can resolve from the slots above.
+
+RETURN STRICTLY THIS JSON:
+{
+  "summary": "one line, e.g. Updated 2 Wednesday slots; added 1 Saturday lab.",
+  "doubts": ["only still-unclear points; clear the ones the user answered"],
+  "updates": [
+    { "id": "s12", "day": "Wednesday", "startTime": "11:00 AM", "endTime": "11:55 AM", "facultyName": "Mr. X / Dr. Y" }
+  ],
+  "additions": [
+    { "courseCode": "BCS501", "courseTitle": "Software Engineering", "day": "Saturday", "startTime": "09:00 AM", "endTime": "09:55 AM", "room": "LH-301", "facultyName": "Ms. V", "type": "Theory" }
+  ],
+  "removals": ["s31"]
+}`
+      : `You are an expert college academic calendar refinement assistant.
 TASK:
-The user previously had their ${params.type === 'timetable' ? 'College Timetable' : 'Academic Calendar of Events'} scanned.
+The user previously had their Academic Calendar of Events scanned.
 The AI had doubts or the user wants to clarify/correct/add missing details.
 
 CURRENT EXTRACTED ITEMS:
@@ -1185,28 +1357,10 @@ INSTRUCTIONS:
 2. If the user answered the doubts satisfactorily, CLEAR those doubts.
 3. If new ambiguities arise, specify them in "doubts". If all questions are resolved, return "doubts": [].
 4. Provide an updated "summary".
+5. Keep every unchanged event exactly as it is (same id, title, dates, type).
 
 JSON SCHEMA (Return strictly JSON):
-${
-  params.type === 'timetable'
-    ? `{
-  "summary": "string",
-  "doubts": ["string"],
-  "items": [
-    {
-      "id": "tt_1",
-      "courseCode": "BCS401",
-      "courseTitle": "Analysis & Design of Algorithms",
-      "day": "Monday",
-      "startTime": "09:00 AM",
-      "endTime": "10:00 AM",
-      "room": "LH-301",
-      "facultyName": "Faculty Name",
-      "type": "Theory"
-    }
-  ]
-}`
-    : `{
+{
   "summary": "string",
   "doubts": ["string"],
   "items": [
@@ -1219,7 +1373,6 @@ ${
       "isImportant": true
     }
   ]
-}`
 }`;
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -1244,41 +1397,150 @@ ${
 
   const resJson = await response.json();
   const rawContent = resJson.choices?.[0]?.message?.content || '{}';
-  const parsed = JSON.parse(rawContent);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    throw new Error('AI returned an invalid response format. Please try again.');
+  }
 
+  const summaryText = parsed.summary || 'Items updated based on your clarifications.';
+  const doubts = Array.isArray(parsed.doubts) ? parsed.doubts : [];
+
+  // Calendar: full list refresh (linear data, safe to rewrite)
+  if (params.type !== 'timetable') {
+    const formattedEvents = Array.isArray(parsed.items)
+      ? parsed.items.map((it: any, i: number) => ({
+          id: it.id || `cal_${Date.now()}_${i + 1}`,
+          title: it.title || 'Academic Event',
+          date: it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date) ? it.date : '2026-10-15',
+          type: it.type || 'Semester Milestones',
+          description: it.description || '',
+          isImportant: it.isImportant ?? true,
+        }))
+      : params.currentItems;
+
+    return { items: formattedEvents, doubts, summary: summaryText };
+  }
+
+  // Timetable: merge a minimal patch into the previously extracted slots so
+  // untouched classes are preserved exactly (no full rewrite)
   const validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const formattedItems = Array.isArray(parsed.items)
-    ? parsed.items.map((it: any, i: number) => {
-        if (params.type === 'timetable') {
-          return {
-            id: it.id || `tt_${Date.now()}_${i + 1}`,
-            courseCode: it.courseCode || 'BCS501',
-            courseTitle: it.courseTitle || 'Academic Subject',
-            day: validDays.includes(it.day) ? it.day : validDays[i % 5],
-            startTime: it.startTime || '09:00 AM',
-            endTime: it.endTime || '10:00 AM',
-            room: it.room || 'LH-301',
-            facultyName: it.facultyName || 'Department Faculty',
-            type: it.type === 'Lab' || it.type === 'Tutorial' ? it.type : 'Theory',
-          };
-        } else {
-          return {
-            id: it.id || `cal_${Date.now()}_${i + 1}`,
-            title: it.title || 'Academic Event',
-            date: it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date) ? it.date : '2026-10-15',
-            type: it.type || 'Semester Milestones',
-            description: it.description || '',
-            isImportant: it.isImportant ?? true,
-          };
-        }
-      })
-    : params.currentItems;
+  const base: any[] = baseItems;
+  const patched = base.map((slot) => ({ ...slot }));
+  const removedIdx = new Set<number>();
+  const touched = new Set<number>();
+  const unmatchedRefs: string[] = [];
+  const additions: any[] = [];
 
-  return {
-    items: formattedItems,
-    doubts: Array.isArray(parsed.doubts) ? parsed.doubts : [],
-    summary: parsed.summary || 'Items updated based on your clarifications.',
+  const asArray = (value: any): any[] =>
+    Array.isArray(value) ? value : value && typeof value === 'object' ? Object.values(value) : [];
+
+  const resolveIndex = (ref: any): number => {
+    if (typeof ref === 'number' && Number.isInteger(ref)) {
+      return ref >= 0 && ref < base.length ? ref : -1;
+    }
+    const raw = typeof ref === 'string' ? ref.trim().toLowerCase() : '';
+    if (!raw) return -1;
+    const short = raw.match(/^s?(\d+)$/);
+    if (short) {
+      const n = Number(short[1]) - 1;
+      if (n >= 0 && n < base.length) return n;
+    }
+    return base.findIndex((slot) => String(slot?.id ?? '').trim().toLowerCase() === raw);
   };
+
+  const applyPatch = (slot: any, patch: any) => {
+    if (!slot || !patch) return;
+    (['courseCode', 'courseTitle', 'startTime', 'endTime', 'facultyName', 'room'] as const).forEach(
+      (field) => {
+        const value = patch[field];
+        if (typeof value === 'string' && value.trim()) slot[field] = value.trim();
+      }
+    );
+    if (typeof patch.day === 'string') {
+      const match = validDays.find((d) => d.toLowerCase() === patch.day.toLowerCase().slice(0, 3));
+      if (match) slot.day = match;
+    }
+    if (patch.type === 'Lab' || patch.type === 'Tutorial' || patch.type === 'Theory') {
+      slot.type = patch.type;
+    }
+  };
+
+  asArray(parsed.updates).forEach((u: any) => {
+    if (!u || typeof u !== 'object') return;
+    const idx = resolveIndex(u.id ?? u.index ?? u.slotId ?? u.handle ?? u.slot);
+    if (idx === -1) {
+      unmatchedRefs.push(String(u.id ?? u.index ?? '?'));
+      return;
+    }
+    applyPatch(patched[idx], u);
+    touched.add(idx);
+  });
+
+  asArray(parsed.removals).forEach((r: any) => {
+    const ref = r && typeof r === 'object' ? r.id ?? r.index ?? r.slotId : r;
+    const idx = resolveIndex(ref);
+    if (idx === -1) {
+      unmatchedRefs.push(String(ref ?? '?'));
+      return;
+    }
+    removedIdx.add(idx);
+    touched.add(idx);
+  });
+
+  asArray(parsed.additions).forEach((it: any, i: number) => {
+    const match = validDays.find(
+      (d) => d.toLowerCase() === String(it?.day || '').toLowerCase().slice(0, 3)
+    );
+    if (!match || !(it?.courseCode || it?.courseTitle)) return;
+    additions.push({
+      id: `tt_${Date.now()}_add_${i + 1}`,
+      courseCode: String(it.courseCode || 'ACAD101').trim().toUpperCase(),
+      courseTitle: it.courseTitle || 'Academic Subject',
+      day: match,
+      startTime: it.startTime || '09:00 AM',
+      endTime: it.endTime || '10:00 AM',
+      room: it.room || 'LH-301',
+      facultyName: it.facultyName || 'Department Faculty',
+      type: it.type === 'Lab' || it.type === 'Tutorial' ? it.type : 'Theory',
+    });
+    touched.add(base.length + additions.length); // mark as applied
+  });
+
+  // Safety net: if the model ignored the patch schema and returned a full list
+  // instead, only adopt entries that resolve to existing slots (no rewrite).
+  if (touched.size === 0 && asArray(parsed.items).length > 0) {
+    asArray(parsed.items).forEach((it: any) => {
+      const idx = resolveIndex(it?.id ?? it?.index);
+      if (idx === -1) return;
+      applyPatch(patched[idx], it);
+      touched.add(idx);
+    });
+    if (touched.size === 0) {
+      throw new Error(
+        'The AI tried to rebuild the whole timetable instead of patching the classes you asked about. Nothing was changed — please rephrase the clarification and try again.'
+      );
+    }
+  }
+
+  if (hadGuidance && touched.size === 0 && additions.length === 0 && doubts.length === 0) {
+    throw new Error(
+      'The clarification could not be matched to any existing class, so nothing changed. Name the day and period/time, e.g. "Monday 3rd period is Software Engineering Lab".'
+    );
+  }
+
+  if (unmatchedRefs.length > 0) {
+    doubts.push(
+      `${unmatchedRefs.length} requested edit(s) pointed at classes that no longer exist and were skipped (${unmatchedRefs
+        .slice(0, 5)
+        .join(', ')}).`
+    );
+  }
+
+  const mergedItems = [...patched.filter((_, i) => !removedIdx.has(i)), ...additions];
+
+  return { items: mergedItems, doubts, summary: summaryText };
 }
 
 /** Legacy wrapper kept for any existing imports */

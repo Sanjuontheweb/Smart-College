@@ -21,8 +21,8 @@ const attrs = [
   { name: 'organizationName', value: 'Smart Campus University' },
   { name: 'organizationalUnitName', value: 'Mobile Engineering' },
   { name: 'countryName', value: 'IN' },
-  { name: 'stateOrProvinceName', value: 'Karnataka' },
-  { name: 'localityName', value: 'Bangalore' }
+  { name: 'stateOrProvinceName', value: 'N/A' },
+  { name: 'localityName', value: 'N/A' }
 ];
 
 cert.setSubject(attrs);

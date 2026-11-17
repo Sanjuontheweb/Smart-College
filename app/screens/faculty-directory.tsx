@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,9 @@ import {
   Image,
   Modal,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Keyboard,
+  Platform,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +39,16 @@ export default function FacultyDirectoryScreen() {
   const [uploadingLayout, setUploadingLayout] = useState(false);
   const [viewingLayout, setViewingLayout] = useState(false);
   const [layoutNotes, setLayoutNotes] = useState('');
+  const [isLayoutKeyboardVisible, setIsLayoutKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setIsLayoutKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setIsLayoutKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
   const [deleteLayoutModalVisible, setDeleteLayoutModalVisible] = useState(false);
 
   // Map portal / localDb faculties into directory format and merge with fallback catalog
@@ -376,112 +389,126 @@ export default function FacultyDirectoryScreen() {
         animationType="fade"
         onRequestClose={() => setViewingLayout(false)}
       >
-        <View style={styles.layoutOverlay}>
+        <KeyboardAvoidingView
+          style={[
+            styles.layoutOverlay,
+            isLayoutKeyboardVisible && { justifyContent: 'flex-end', paddingBottom: 10 },
+          ]}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
+        >
           <View style={[styles.layoutSheet, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.layoutSheetHeader}>
               <Text style={[styles.layoutSheetTitle, { color: colors.text }]}>College Layout</Text>
-              <TouchableOpacity
-                onPress={() => setViewingLayout(false)}
-                accessibilityLabel="Close layout"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Ionicons name="close-circle" size={26} color={colors.textSecondary} />
-              </TouchableOpacity>
+              {!isLayoutKeyboardVisible && (
+                <TouchableOpacity
+                  onPress={() => setViewingLayout(false)}
+                  accessibilityLabel="Close layout"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="close-circle" size={26} color={colors.textSecondary} />
+                </TouchableOpacity>
+              )}
             </View>
 
-            {collegeLayout && collegeLayout.fileName.toLowerCase().endsWith('.pdf') ? (
-              <TouchableOpacity
-                onPress={() =>
-                  openStudyMaterial({
-                    id: 'college-layout-pdf',
-                    courseCode: 'LAYOUT',
-                    courseTitle: 'College Layout',
-                    title: 'College Layout',
-                    category: 'Notes',
-                    fileType: 'PDF',
-                    fileSize: collegeLayout.fileSize,
-                    uploadedBy: 'Campus',
-                    date: collegeLayout.uploadedAt,
-                    fileUri: collegeLayout.localUri,
-                    fileName: collegeLayout.fileName,
-                  })
-                }
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 4 }}
+            >
+              {collegeLayout && collegeLayout.fileName.toLowerCase().endsWith('.pdf') ? (
+                <TouchableOpacity
+                  onPress={() =>
+                    openStudyMaterial({
+                      id: 'college-layout-pdf',
+                      courseCode: 'LAYOUT',
+                      courseTitle: 'College Layout',
+                      title: 'College Layout',
+                      category: 'Notes',
+                      fileType: 'PDF',
+                      fileSize: collegeLayout.fileSize,
+                      uploadedBy: 'Campus',
+                      date: collegeLayout.uploadedAt,
+                      fileUri: collegeLayout.localUri,
+                      fileName: collegeLayout.fileName,
+                    })
+                  }
+                  style={[styles.layoutPdfPlaceholder, { backgroundColor: colors.searchBarBg, borderColor: colors.border }]}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Open PDF layout"
+                >
+                  <Ionicons name="document-text" size={56} color={colors.primary} />
+                  <Text style={{ color: colors.text, fontWeight: '800', marginTop: 10 }}>
+                    College Layout (PDF)
+                  </Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 4 }}>
+                    Tap to open the PDF document
+                  </Text>
+                </TouchableOpacity>
+              ) : collegeLayout ? (
+                <Image
+                  source={{ uri: collegeLayout.localUri }}
+                  style={styles.layoutImage}
+                  resizeMode="contain"
+                />
+              ) : null}
+
+              <Text style={[styles.layoutNotesLabel, { color: colors.textSecondary }]}>
+                Pointers {role === 'student' ? '(read-only)' : ''}
+              </Text>
+              <TextInput
                 style={[
-                  styles.layoutPdfPlaceholder,
-                  { backgroundColor: colors.searchBarBg, borderColor: colors.border },
+                  styles.layoutNotesInput,
+                  {
+                    backgroundColor: isDark ? '#1F2937' : '#F8FAFC',
+                    color: colors.text,
+                    borderColor: colors.border,
+                    minHeight: isLayoutKeyboardVisible ? 60 : 70,
+                  },
                 ]}
-                activeOpacity={0.8}
-                accessibilityLabel="Open PDF layout"
-              >
-                <Ionicons name="document-text" size={56} color={colors.primary} />
-                <Text style={{ color: colors.text, fontWeight: '800', marginTop: 10 }}>
-                  College Layout (PDF)
-                </Text>
-                <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 4 }}>
-                  Tap to open the PDF document
-                </Text>
-              </TouchableOpacity>
-            ) : collegeLayout ? (
-              <Image
-                source={{ uri: collegeLayout.localUri }}
-                style={styles.layoutImage}
-                resizeMode="contain"
+                placeholder={
+                  role === 'student'
+                    ? 'Faculty and admin pointers will appear here…'
+                    : 'Add pointers: blocks, gates, labs, hostels…'
+                }
+                placeholderTextColor={colors.textSecondary}
+                value={layoutNotes}
+                onChangeText={setLayoutNotes}
+                editable={role !== 'student'}
+                multiline
+                textAlignVertical="top"
               />
-            ) : null}
+              {role !== 'student' && (
+                <TouchableOpacity
+                  style={[styles.layoutNotesSaveBtn, { backgroundColor: colors.primary }]}
+                  onPress={handleSaveLayoutNotes}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" />
+                  <Text style={styles.layoutBtnText}>Save Pointers</Text>
+                </TouchableOpacity>
+              )}
 
-            {/* Pointers: faculty/admin type, students read-only */}
-            <Text style={[styles.layoutNotesLabel, { color: colors.textSecondary }]}>
-              Pointers {role === 'student' ? '(read-only)' : ''}
-            </Text>
-            <TextInput
-              style={[
-                styles.layoutNotesInput,
-                {
-                  backgroundColor: isDark ? '#1F2937' : '#F8FAFC',
-                  color: colors.text,
-                  borderColor: colors.border,
-                },
-              ]}
-              placeholder={
-                role === 'student'
-                  ? 'Faculty and admin pointers will appear here…'
-                  : 'Add pointers: blocks, gates, labs, hostels…'
-              }
-              placeholderTextColor={colors.textSecondary}
-              value={layoutNotes}
-              onChangeText={setLayoutNotes}
-              editable={role !== 'student'}
-              multiline
-              textAlignVertical="top"
-            />
-            {role !== 'student' && (
-              <TouchableOpacity
-                style={[styles.layoutNotesSaveBtn, { backgroundColor: colors.primary }]}
-                onPress={handleSaveLayoutNotes}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" />
-                <Text style={styles.layoutBtnText}>Save Pointers</Text>
-              </TouchableOpacity>
-            )}
-
-            <View style={styles.layoutModalActions}>
-              <TouchableOpacity
-                style={[styles.layoutBtn, { backgroundColor: '#DC2626', flex: 1 }]}
-                onPress={handleDeleteLayout}
-              >
-                <Ionicons name="trash-outline" size={16} color="#FFFFFF" />
-                <Text style={styles.layoutBtnText}>Delete Layout</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.layoutBtn, { backgroundColor: colors.primary, flex: 1 }]}
-                onPress={() => setViewingLayout(false)}
-              >
-                <Text style={styles.layoutBtnText}>Close</Text>
-              </TouchableOpacity>
-            </View>
+              {!isLayoutKeyboardVisible && (
+                <View style={styles.layoutModalActions}>
+                  <TouchableOpacity
+                    style={[styles.layoutBtn, { backgroundColor: '#DC2626', flex: 1 }]}
+                    onPress={handleDeleteLayout}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#FFFFFF" />
+                    <Text style={styles.layoutBtnText}>Delete Layout</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.layoutBtn, { backgroundColor: colors.primary, flex: 1 }]}
+                    onPress={() => setViewingLayout(false)}
+                  >
+                    <Text style={styles.layoutBtnText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Delete layout confirmation (in-app prompt) */}

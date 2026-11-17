@@ -187,7 +187,7 @@ export default function AcademicsScreen() {
     gradeAssignment(gradingAsg.id, score, gradeFeedback.trim() || 'Evaluated and marked.');
     setGradeModal(false);
     showNotice({
-      title: 'Assignment Graded! ??',
+      title: 'Assignment Graded!',
       message: `Allotted ${score}/${gradingAsg.maxMarks} marks for "${gradingAsg.title}".`,
       type: 'success',
     });
@@ -248,7 +248,7 @@ export default function AcademicsScreen() {
       facultyName: user.fullName || 'Faculty',
       title: newAsgTitle.trim(),
       description: newAsgDesc.trim(),
-      dueDate: `${newAsgDue} � 11:59 PM`,
+      dueDate: `${newAsgDue} • 11:59 PM`,
       maxMarks: 25,
     });
     setNewAsgTitle('');
@@ -268,7 +268,7 @@ export default function AcademicsScreen() {
       setSubmitModal(false);
       setSubmissionNote('');
       showNotice({
-        title: 'Assignment Submitted! ??',
+        title: 'Assignment Submitted!',
         message: 'Your assignment submission has been logged and awarded +50 XP!',
         type: 'quest',
         xpReward: 50,
@@ -576,7 +576,7 @@ export default function AcademicsScreen() {
                         {slot.courseTitle}
                       </Text>
                       <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                        ?? {slot.room} � Faculty: {slot.facultyName}
+                        {slot.room} • Faculty: {slot.facultyName}
                       </Text>
                     </View>
                   </View>
@@ -637,7 +637,7 @@ export default function AcademicsScreen() {
                           {sub.courseTitle}
                         </Text>
                         <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                          {sub.facultyName || 'Department Faculty'} � {sub.roster.length} students
+                          {sub.facultyName || 'Department Faculty'} • {sub.roster.length} students
                         </Text>
                       </View>
                       <TouchableOpacity
@@ -680,7 +680,7 @@ export default function AcademicsScreen() {
                             </Text>
                             <Text style={{ color: colors.textSecondary, fontSize: 11 }}>
                               {student.rollNo || student.id}
-                              {total > 0 ? ` � ${attended}/${total} classes` : ' � Not marked'}
+                              {total > 0 ? ` • ${attended}/${total} classes` : ' • Not marked'}
                             </Text>
                           </View>
                           {percentage === null ? (
@@ -760,7 +760,7 @@ export default function AcademicsScreen() {
                       {rec.courseTitle}
                     </Text>
                     <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                      Attended {rec.attended} of {rec.total} classes � Faculty: {rec.facultyName}
+                      Attended {rec.attended} of {rec.total} classes • Faculty: {rec.facultyName}
                     </Text>
                   </View>
 
@@ -778,7 +778,7 @@ export default function AcademicsScreen() {
                         },
                       ]}
                     >
-                      {rec.total > 0 ? `${rec.percentage}%` : '�'}
+                      {rec.total > 0 ? `${rec.percentage}%` : '•'}
                     </Text>
                   </View>
                 </View>
@@ -932,7 +932,11 @@ export default function AcademicsScreen() {
                               subjectMarkList.map(({ student, mark }) => (
                                 <Card
                                   key={student.id}
-                                  style={{ backgroundColor: colors.card, borderColor: colors.cardBorder, marginBottom: 10 }}
+                                  style={{
+                                    backgroundColor: isDark ? '#26334B' : '#FFFFFF',
+                                    borderColor: isDark ? '#3B4E6C' : '#E2E8F0',
+                                    marginBottom: 6,
+                                  }}
                                 >
                                   <View style={styles.marksCardHeader}>
                                     <View style={{ flex: 1 }}>
@@ -950,7 +954,7 @@ export default function AcademicsScreen() {
                                       </Text>
                                       {(student.cgpa != null || mark?.cgpa != null) ? (
                                         <Text style={{ color: colors.textSecondary, fontSize: 11, marginTop: 2 }}>
-                                          {`Aggregate % � `}
+                                          {`Aggregate %  `}
 
                                         </Text>
                                       ) : null}
@@ -1014,10 +1018,10 @@ export default function AcademicsScreen() {
                     Semester Examination Grade Card
                   </Text>
                   <Text style={[styles.marksHeroSub, { color: isDark ? '#C4B5FD' : '#6366F1' }]}>
-                    VTU Autonomous Credit System � 4th Semester
+                    VTU Autonomous Credit System • 4th Semester
                   </Text>
                 </View>
-                <Badge label="VERIFIED � COE" variant="success" />
+                <Badge label="VERIFIED • COE" variant="success" />
               </View>
 
               <View style={styles.marksScoreRow}>
@@ -1296,8 +1300,8 @@ export default function AcademicsScreen() {
                             <Card
                               key={asg.id}
                               style={{
-                                backgroundColor: isDark ? '#1F2937' : '#F8FAFC',
-                                borderColor: colors.cardBorder,
+                                backgroundColor: isDark ? '#26334B' : '#FFFFFF',
+                                borderColor: isDark ? '#3B4E6C' : '#E2E8F0',
                                 marginBottom: 10,
                               }}
                             >
@@ -1430,7 +1434,7 @@ export default function AcademicsScreen() {
                     </View>
                     <Text style={[styles.matTitle, { color: colors.text }]}>{mat.title}</Text>
                     <Text style={[styles.slotMeta, { color: colors.textSecondary }]}>
-                      {mat.fileSize} � Uploaded by {mat.uploadedBy}
+                      {mat.fileSize} • Uploaded by {mat.uploadedBy}
                     </Text>
                   </View>
 
@@ -1692,7 +1696,7 @@ export default function AcademicsScreen() {
         </View>
       </Modal>
 
-      {/* Faculty Attendance Roster Modal � instant Present/Absent per student */}
+      {/* Faculty Attendance Roster Modal  instant Present/Absent per student */}
       <Modal
         visible={rosterModal}
         transparent
@@ -1716,7 +1720,7 @@ export default function AcademicsScreen() {
                   Mark Attendance
                 </Text>
                 <Text style={[styles.modalSub, { color: colors.textSecondary }]}>
-                  {selectedCourseRoster?.courseCode}: {selectedCourseRoster?.courseTitle} � tap to mark instantly
+                  {selectedCourseRoster?.courseCode}: {selectedCourseRoster?.courseTitle} • tap to mark instantly
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setRosterModal(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -2153,6 +2157,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    padding : 2,
   },
   totalBadge: {
     alignItems: 'flex-end',
